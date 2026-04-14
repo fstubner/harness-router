@@ -1,19 +1,61 @@
 {
   "name": "coding-agent-mcp",
-  "version": "0.1.0",
-  "description": "MCP server that routes coding tasks across Claude Code, Cursor, Codex, and Gemini CLI with quota-aware load balancing",
-  "keywords": ["mcp", "claude", "coding", "ai-agents", "llm", "cursor", "codex", "gemini"],
+  "version": "1.0.0-alpha.0",
+  "description": "MCP server that routes coding tasks across Claude Code, Cursor, Codex, and Gemini CLI with quota-aware load balancing. TypeScript rewrite.",
+  "keywords": [
+    "mcp",
+    "claude",
+    "coding",
+    "ai-agents",
+    "llm",
+    "cursor",
+    "codex",
+    "gemini"
+  ],
   "license": "MIT",
   "author": "Felix Stubner",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "bin": {
-    "coding-agent-mcp": "./bin/coding-agent-mcp.js"
+    "coding-agent-mcp": "./dist/bin.js"
   },
   "files": [
-    "bin/",
+    "dist/",
+    "data/",
+    "config.example.yaml",
     "README.md"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/bin.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:parity": "vitest run tests/scoring-parity.test.ts",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0",
+    "which": "^5.0.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^24.0.0",
+    "@types/which": "^3.0.4",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0",
+    "vitest": "^2.1.0"
   },
   "repository": {
     "type": "git",

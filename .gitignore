@@ -1,43 +1,34 @@
-__pycache__/
-*.py[cod]
-*.egg-info/
+# Node / TypeScript
+node_modules/
 dist/
 build/
-.venv/
-venv/
-*.egg
-.eggs/
-pip-wheel-metadata/
+*.tgz
+*.tsbuildinfo
 
-# State files
+# Test + dev state
 quota_state.json
 test_state.json
+coverage/
+.vitest-cache/
 
-# Editor
+# Editor + OS
 .vscode/
 .idea/
 *.swp
-
-# OS
 .DS_Store
 Thumbs.db
 
-# Type checker
-.mypy_cache/
-
-# Pytest temp dirs
-pytest-cache-files-*/
-
-# Node.js/npm
-node_modules/
-*.tgz
-
-# Pre-rename artefacts (safe to delete manually)
-src/coding_router/
-*.egg-info/
-
-# Backup files from refactor
-*.bak
-
 # Claude Code (settings and worktrees)
 .claude/
+
+# Backup files
+*.bak
+
+# Python archive remnants (safe to delete once archive/python-v1 is the only Python source)
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+pytest-cache-files-*/
