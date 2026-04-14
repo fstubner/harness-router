@@ -17,6 +17,7 @@
  * Quota: Reactive only. No proactive quota endpoint — deferred to R3.
  */
 
+import which from "which";
 import type { DispatchResult, QuotaInfo } from "../types.js";
 import type { Dispatcher, DispatchOpts } from "./base.js";
 import { runSubprocess } from "./shared/subprocess.js";
@@ -56,8 +57,10 @@ export class ClaudeCodeDispatcher implements Dispatcher {
     workingDir: string,
     opts: DispatchOpts = {},
   ): Promise<DispatchResult> {
-    const resolved = resolveCliCommand("claude");
-    if (!resolved) {
+    // Upfront PATH check — resolveCliCommand below returns a non-null fallback
+    // even when the CLI isn't installed, so we detect availability first.
+    const foundPath = await which("claude", { nothrow: true });
+    if (!foundPath) {
       return {
         output: "",
         service: "claude_code",
@@ -65,6 +68,7 @@ export class ClaudeCodeDispatcher implements Dispatcher {
         error: "claude CLI not found",
       };
     }
+    const resolved = await resolveCliCommand("claude");
 
     // Inline file paths in the prompt body — Claude's Read tool loads them.
     let fullPrompt = prompt;
@@ -91,12 +95,10 @@ export class ClaudeCodeDispatcher implements Dispatcher {
 
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-    const sub = await runSubprocess({
-      command: resolved.command,
-      args,
-      cwd: workingDir || undefined,
+    // Claude Code uses OAuth/keychain — no API key env var.
+    const sub = await runSubprocess(resolved.command, args, {
+      ...(workingDir ? { cwd: workingDir } : {}),
       timeoutMs,
-      // Claude Code uses OAuth/keychain — no API key env var.
     });
 
     if (sub.timedOut) {

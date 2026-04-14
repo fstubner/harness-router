@@ -10,6 +10,7 @@
  * circuit breaker handles exhaustion from 429 responses.
  */
 
+import which from "which";
 import type { DispatchResult, QuotaInfo } from "../types.js";
 import type { Dispatcher, DispatchOpts } from "./base.js";
 import { runSubprocess } from "./shared/subprocess.js";
@@ -52,8 +53,8 @@ export class CodexDispatcher implements Dispatcher {
     workingDir: string,
     opts: DispatchOpts = {},
   ): Promise<DispatchResult> {
-    const resolved = resolveCliCommand("codex");
-    if (!resolved) {
+    const foundPath = await which("codex", { nothrow: true });
+    if (!foundPath) {
       return {
         output: "",
         service: "codex",
@@ -61,6 +62,7 @@ export class CodexDispatcher implements Dispatcher {
         error: "codex CLI not found",
       };
     }
+    const resolved = await resolveCliCommand("codex");
 
     // Codex takes a positional prompt argument; inline file paths so the
     // agent is aware of them (Codex can read them via its own tools).
@@ -96,13 +98,10 @@ export class CodexDispatcher implements Dispatcher {
 
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-    const sub = await runSubprocess({
-      command: resolved.command,
-      args,
-      cwd: workingDir || undefined,
-      timeoutMs,
-      extraEnv: Object.keys(extraEnv).length > 0 ? extraEnv : undefined,
-    });
+    const subOpts: Parameters<typeof runSubprocess>[2] = { timeoutMs };
+    if (workingDir) subOpts.cwd = workingDir;
+    if (Object.keys(extraEnv).length > 0) subOpts.env = extraEnv;
+    const sub = await runSubprocess(resolved.command, args, subOpts);
 
     if (sub.timedOut) {
       return {

@@ -1,11 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import type { SubprocessResult } from "../../src/dispatchers/shared/subprocess.js";
+import type {
+  SubprocessResult,
+  RunSubprocessOpts,
+} from "../../src/dispatchers/shared/subprocess.js";
 
 vi.mock("../../src/dispatchers/shared/subprocess.js", () => ({
   runSubprocess: vi.fn(),
 }));
 vi.mock("../../src/dispatchers/shared/windows-cmd.js", () => ({
   resolveCliCommand: vi.fn(),
+}));
+vi.mock("which", () => ({
+  default: vi.fn(),
 }));
 
 const { runSubprocess } = await import(
@@ -14,16 +20,14 @@ const { runSubprocess } = await import(
 const { resolveCliCommand } = await import(
   "../../src/dispatchers/shared/windows-cmd.js"
 );
-const { CodexDispatcher } = await import(
-  "../../src/dispatchers/codex.js"
-);
+const { default: which } = await import("which");
+const { CodexDispatcher } = await import("../../src/dispatchers/codex.js");
 
-const runSubprocessMock = runSubprocess as unknown as ReturnType<
-  typeof vi.fn
->;
+const runSubprocessMock = runSubprocess as unknown as ReturnType<typeof vi.fn>;
 const resolveCliCommandMock = resolveCliCommand as unknown as ReturnType<
   typeof vi.fn
 >;
+const whichMock = which as unknown as ReturnType<typeof vi.fn>;
 
 function ok(overrides: Partial<SubprocessResult> = {}): SubprocessResult {
   return {
@@ -36,11 +40,35 @@ function ok(overrides: Partial<SubprocessResult> = {}): SubprocessResult {
   };
 }
 
+/** Typed accessor for the positional `runSubprocess(command, args, opts?)` call. */
+function captureSubprocessCall(index: number): {
+  command: string;
+  args: string[];
+  opts: RunSubprocessOpts | undefined;
+} {
+  const call = runSubprocessMock.mock.calls[index];
+  if (!call) throw new Error(`runSubprocess call #${index} not recorded`);
+  return {
+    command: call[0] as string,
+    args: call[1] as string[],
+    opts: call[2] as RunSubprocessOpts | undefined,
+  };
+}
+
+function mockFound(commandPath = "/usr/local/bin/codex"): void {
+  whichMock.mockResolvedValue(commandPath);
+  resolveCliCommandMock.mockResolvedValue({
+    command: commandPath,
+    prefixArgs: [],
+  });
+}
+
 const savedEnv = { ...process.env };
 
 beforeEach(() => {
   runSubprocessMock.mockReset();
   resolveCliCommandMock.mockReset();
+  whichMock.mockReset();
 });
 
 afterEach(() => {
@@ -55,7 +83,7 @@ afterEach(() => {
 
 describe("CodexDispatcher", () => {
   it("returns an error DispatchResult when the CLI is not found", async () => {
-    resolveCliCommandMock.mockReturnValue(null);
+    whichMock.mockResolvedValue(null);
     const d = new CodexDispatcher();
 
     const res = await d.dispatch("hi", [], "");
@@ -67,10 +95,7 @@ describe("CodexDispatcher", () => {
   });
 
   it("extracts the last agent_message item from JSONL output", async () => {
-    resolveCliCommandMock.mockReturnValue({
-      command: "codex",
-      prefixArgs: [],
-    });
+    mockFound();
     const jsonl = [
       JSON.stringify({ type: "thread.started" }),
       JSON.stringify({
@@ -97,10 +122,7 @@ describe("CodexDispatcher", () => {
   });
 
   it("appends --cd <workingDir> when workingDir is non-empty", async () => {
-    resolveCliCommandMock.mockReturnValue({
-      command: "codex",
-      prefixArgs: [],
-    });
+    mockFound();
     runSubprocessMock.mockResolvedValue(
       ok({
         stdout: JSON.stringify({
@@ -113,19 +135,14 @@ describe("CodexDispatcher", () => {
     const d = new CodexDispatcher();
     await d.dispatch("go", [], "/tmp/project");
 
-    const call = runSubprocessMock.mock.calls[0]![0] as {
-      args: string[];
-    };
-    expect(call.args).toContain("--cd");
-    const idx = call.args.indexOf("--cd");
-    expect(call.args[idx + 1]).toBe("/tmp/project");
+    const { args } = captureSubprocessCall(0);
+    expect(args).toContain("--cd");
+    const idx = args.indexOf("--cd");
+    expect(args[idx + 1]).toBe("/tmp/project");
   });
 
   it("does NOT append --cd when workingDir is empty", async () => {
-    resolveCliCommandMock.mockReturnValue({
-      command: "codex",
-      prefixArgs: [],
-    });
+    mockFound();
     runSubprocessMock.mockResolvedValue(
       ok({
         stdout: JSON.stringify({
@@ -138,18 +155,13 @@ describe("CodexDispatcher", () => {
     const d = new CodexDispatcher();
     await d.dispatch("go", [], "");
 
-    const call = runSubprocessMock.mock.calls[0]![0] as {
-      args: string[];
-    };
-    expect(call.args).not.toContain("--cd");
+    const { args } = captureSubprocessCall(0);
+    expect(args).not.toContain("--cd");
   });
 
   it("forwards OPENAI_API_KEY from process.env to the subprocess", async () => {
     process.env["OPENAI_API_KEY"] = "sk-test-12345";
-    resolveCliCommandMock.mockReturnValue({
-      command: "codex",
-      prefixArgs: [],
-    });
+    mockFound();
     runSubprocessMock.mockResolvedValue(
       ok({
         stdout: JSON.stringify({
@@ -162,19 +174,14 @@ describe("CodexDispatcher", () => {
     const d = new CodexDispatcher();
     await d.dispatch("go", [], "");
 
-    const call = runSubprocessMock.mock.calls[0]![0] as {
-      extraEnv?: Record<string, string>;
-    };
-    expect(call.extraEnv).toBeDefined();
-    expect(call.extraEnv!["OPENAI_API_KEY"]).toBe("sk-test-12345");
+    const { opts } = captureSubprocessCall(0);
+    expect(opts?.env).toBeDefined();
+    expect(opts?.env?.["OPENAI_API_KEY"]).toBe("sk-test-12345");
   });
 
   it("does NOT forward OPENAI_API_KEY when the env var is unset", async () => {
     delete process.env["OPENAI_API_KEY"];
-    resolveCliCommandMock.mockReturnValue({
-      command: "codex",
-      prefixArgs: [],
-    });
+    mockFound();
     runSubprocessMock.mockResolvedValue(
       ok({
         stdout: JSON.stringify({
@@ -187,20 +194,15 @@ describe("CodexDispatcher", () => {
     const d = new CodexDispatcher();
     await d.dispatch("go", [], "");
 
-    const call = runSubprocessMock.mock.calls[0]![0] as {
-      extraEnv?: Record<string, string>;
-    };
-    // extraEnv should either be undefined or not contain the key.
-    if (call.extraEnv) {
-      expect(call.extraEnv["OPENAI_API_KEY"]).toBeUndefined();
+    const { opts } = captureSubprocessCall(0);
+    // env should either be undefined or not contain the key.
+    if (opts?.env) {
+      expect(opts.env["OPENAI_API_KEY"]).toBeUndefined();
     }
   });
 
   it("passes --model <override> through to the subprocess", async () => {
-    resolveCliCommandMock.mockReturnValue({
-      command: "codex",
-      prefixArgs: [],
-    });
+    mockFound();
     runSubprocessMock.mockResolvedValue(
       ok({
         stdout: JSON.stringify({
@@ -213,19 +215,14 @@ describe("CodexDispatcher", () => {
     const d = new CodexDispatcher();
     await d.dispatch("go", [], "", { modelOverride: "o4-mini" });
 
-    const call = runSubprocessMock.mock.calls[0]![0] as {
-      args: string[];
-    };
-    expect(call.args).toContain("--model");
-    const idx = call.args.indexOf("--model");
-    expect(call.args[idx + 1]).toBe("o4-mini");
+    const { args } = captureSubprocessCall(0);
+    expect(args).toContain("--model");
+    const idx = args.indexOf("--model");
+    expect(args[idx + 1]).toBe("o4-mini");
   });
 
   it("reports failure on a non-zero exit code", async () => {
-    resolveCliCommandMock.mockReturnValue({
-      command: "codex",
-      prefixArgs: [],
-    });
+    mockFound();
     runSubprocessMock.mockResolvedValue(
       ok({ stdout: "", stderr: "something broke", exitCode: 2 }),
     );

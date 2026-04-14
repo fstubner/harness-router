@@ -1,12 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { SubprocessResult } from "../../src/dispatchers/shared/subprocess.js";
+import type {
+  SubprocessResult,
+  RunSubprocessOpts,
+} from "../../src/dispatchers/shared/subprocess.js";
 
-// Mock the shared modules Agent 1 writes. Tests never spawn real subprocesses.
+// Mock the shared modules Agent 1 writes + `which` (used for availability check).
+// Tests never spawn real subprocesses.
 vi.mock("../../src/dispatchers/shared/subprocess.js", () => ({
   runSubprocess: vi.fn(),
 }));
 vi.mock("../../src/dispatchers/shared/windows-cmd.js", () => ({
   resolveCliCommand: vi.fn(),
+}));
+vi.mock("which", () => ({
+  default: vi.fn(),
 }));
 
 // Import the mocked symbols and the dispatcher AFTER registering mocks.
@@ -16,16 +23,16 @@ const { runSubprocess } = await import(
 const { resolveCliCommand } = await import(
   "../../src/dispatchers/shared/windows-cmd.js"
 );
+const { default: which } = await import("which");
 const { ClaudeCodeDispatcher } = await import(
   "../../src/dispatchers/claude-code.js"
 );
 
-const runSubprocessMock = runSubprocess as unknown as ReturnType<
-  typeof vi.fn
->;
+const runSubprocessMock = runSubprocess as unknown as ReturnType<typeof vi.fn>;
 const resolveCliCommandMock = resolveCliCommand as unknown as ReturnType<
   typeof vi.fn
 >;
+const whichMock = which as unknown as ReturnType<typeof vi.fn>;
 
 function ok(overrides: Partial<SubprocessResult> = {}): SubprocessResult {
   return {
@@ -38,14 +45,38 @@ function ok(overrides: Partial<SubprocessResult> = {}): SubprocessResult {
   };
 }
 
+/** Typed accessor for the positional `runSubprocess(command, args, opts?)` call. */
+function captureSubprocessCall(index: number): {
+  command: string;
+  args: string[];
+  opts: RunSubprocessOpts | undefined;
+} {
+  const call = runSubprocessMock.mock.calls[index];
+  if (!call) throw new Error(`runSubprocess call #${index} not recorded`);
+  return {
+    command: call[0] as string,
+    args: call[1] as string[],
+    opts: call[2] as RunSubprocessOpts | undefined,
+  };
+}
+
+function mockFound(commandPath = "/usr/local/bin/claude"): void {
+  whichMock.mockResolvedValue(commandPath);
+  resolveCliCommandMock.mockResolvedValue({
+    command: commandPath,
+    prefixArgs: [],
+  });
+}
+
 beforeEach(() => {
   runSubprocessMock.mockReset();
   resolveCliCommandMock.mockReset();
+  whichMock.mockReset();
 });
 
 describe("ClaudeCodeDispatcher", () => {
   it("returns an error DispatchResult when the CLI is not found", async () => {
-    resolveCliCommandMock.mockReturnValue(null);
+    whichMock.mockResolvedValue(null);
     const d = new ClaudeCodeDispatcher();
 
     const res = await d.dispatch("hi", [], "");
@@ -55,13 +86,11 @@ describe("ClaudeCodeDispatcher", () => {
     expect(res.error).toMatch(/claude CLI not found/i);
     expect(res.output).toBe("");
     expect(runSubprocessMock).not.toHaveBeenCalled();
+    expect(resolveCliCommandMock).not.toHaveBeenCalled();
   });
 
   it("parses structured JSON output on a successful run", async () => {
-    resolveCliCommandMock.mockReturnValue({
-      command: "claude",
-      prefixArgs: [],
-    });
+    mockFound();
     runSubprocessMock.mockResolvedValue(
       ok({
         stdout: JSON.stringify({
@@ -82,10 +111,7 @@ describe("ClaudeCodeDispatcher", () => {
   });
 
   it("falls back to raw stdout when JSON parsing fails but exit code is 0", async () => {
-    resolveCliCommandMock.mockReturnValue({
-      command: "claude",
-      prefixArgs: [],
-    });
+    mockFound();
     runSubprocessMock.mockResolvedValue(
       ok({ stdout: "not valid json at all" }),
     );
@@ -99,10 +125,7 @@ describe("ClaudeCodeDispatcher", () => {
   });
 
   it("reports failure on non-zero exit code", async () => {
-    resolveCliCommandMock.mockReturnValue({
-      command: "claude",
-      prefixArgs: [],
-    });
+    mockFound();
     runSubprocessMock.mockResolvedValue(
       ok({
         stdout: "",
@@ -119,10 +142,7 @@ describe("ClaudeCodeDispatcher", () => {
   });
 
   it("passes --model <override> through to the subprocess", async () => {
-    resolveCliCommandMock.mockReturnValue({
-      command: "claude",
-      prefixArgs: [],
-    });
+    mockFound();
     runSubprocessMock.mockResolvedValue(
       ok({ stdout: JSON.stringify({ result: "ok" }) }),
     );
@@ -133,19 +153,14 @@ describe("ClaudeCodeDispatcher", () => {
     });
 
     expect(runSubprocessMock).toHaveBeenCalledTimes(1);
-    const call = runSubprocessMock.mock.calls[0]![0] as {
-      args: string[];
-    };
-    expect(call.args).toContain("--model");
-    const idx = call.args.indexOf("--model");
-    expect(call.args[idx + 1]).toBe("claude-opus-4-6");
+    const { args } = captureSubprocessCall(0);
+    expect(args).toContain("--model");
+    const idx = args.indexOf("--model");
+    expect(args[idx + 1]).toBe("claude-opus-4-6");
   });
 
   it("propagates the provided timeoutMs to runSubprocess", async () => {
-    resolveCliCommandMock.mockReturnValue({
-      command: "claude",
-      prefixArgs: [],
-    });
+    mockFound();
     runSubprocessMock.mockResolvedValue(
       ok({ stdout: JSON.stringify({ result: "ok" }) }),
     );
@@ -153,17 +168,12 @@ describe("ClaudeCodeDispatcher", () => {
     const d = new ClaudeCodeDispatcher();
     await d.dispatch("go", [], "", { timeoutMs: 5000 });
 
-    const call = runSubprocessMock.mock.calls[0]![0] as {
-      timeoutMs: number;
-    };
-    expect(call.timeoutMs).toBe(5000);
+    const { opts } = captureSubprocessCall(0);
+    expect(opts?.timeoutMs).toBe(5000);
   });
 
   it("returns a timed-out DispatchResult when the subprocess times out", async () => {
-    resolveCliCommandMock.mockReturnValue({
-      command: "claude",
-      prefixArgs: [],
-    });
+    mockFound();
     runSubprocessMock.mockResolvedValue(
       ok({
         stdout: "",
