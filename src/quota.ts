@@ -188,8 +188,12 @@ export class QuotaCache {
   // ------------------------------------------------------------------
 
   private async maybeRefresh(service: string): Promise<void> {
-    const last = this.lastChecked[service] ?? 0;
-    if (monotonicSec() - last < this.ttlMs / 1000) {
+    const last = this.lastChecked[service];
+    // Node's performance.now() starts near 0 at process start, unlike Python's
+    // time.monotonic() (which references OS boot). Treat "never checked" as a
+    // force-refresh rather than comparing against 0 — otherwise the first call
+    // in a freshly-started process may short-circuit before TTL elapses.
+    if (last !== undefined && monotonicSec() - last < this.ttlMs / 1000) {
       return;
     }
 

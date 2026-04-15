@@ -92,8 +92,6 @@ async function makeDispatcher(
 
 async function cmdRoute(prompt: string, configPath: string | undefined): Promise<number> {
   const config = await loadConfig(configPath);
-  const quota = new QuotaCache();
-  const leaderboard = new LeaderboardCache();
   const dispatchers = await buildDispatchers(config);
   if (Object.keys(dispatchers).length === 0) {
     process.stderr.write(
@@ -102,6 +100,8 @@ async function cmdRoute(prompt: string, configPath: string | undefined): Promise
     );
     return 1;
   }
+  const quota = new QuotaCache(dispatchers);
+  const leaderboard = new LeaderboardCache();
   const router = new Router(config, quota, dispatchers, leaderboard);
 
   const { result, decision } = await router.route(prompt, [], process.cwd());
@@ -149,9 +149,9 @@ async function cmdListServices(configPath: string | undefined): Promise<number> 
 
 async function cmdDashboard(configPath: string | undefined): Promise<number> {
   const config = await loadConfig(configPath);
-  const quota = new QuotaCache();
-  const leaderboard = new LeaderboardCache();
   const dispatchers = await buildDispatchers(config);
+  const quota = new QuotaCache(dispatchers);
+  const leaderboard = new LeaderboardCache();
   const router = new Router(config, quota, dispatchers, leaderboard);
 
   const bstatus = router.circuitBreakerStatus();
