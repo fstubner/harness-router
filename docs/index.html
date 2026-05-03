@@ -4,11 +4,11 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Harness Router MCP — same model, different harness, different result</title>
-<meta name="description" content="An MCP server that routes coding tasks across Claude Code, Cursor, Codex, Gemini CLI, OpenCode, and GitHub Copilot CLI — quota-aware, circuit-breaking, and (model × harness) scored. Plug in any other CLI with a one-line YAML entry." />
+<meta name="description" content="An MCP server that routes coding tasks to the right CLI. Works with Claude Code, Cursor, Codex, Gemini, OpenCode, GitHub Copilot CLI, and any other CLI you add via YAML. Tracks quota, scores model and CLI together, drops failing services automatically." />
 <meta name="theme-color" content="#0e0f12" />
 
 <meta property="og:title" content="Harness Router MCP" />
-<meta property="og:description" content="Same model, different harness, different result. Route coding tasks across Claude Code, Cursor, Codex, Gemini, OpenCode, and GitHub Copilot CLI — plus any other CLI you plug in via YAML." />
+<meta property="og:description" content="Same model, different harness, different result. An MCP server that picks the right CLI for each coding task. Built for Claude Code, Cursor, Codex, Gemini, OpenCode, and GitHub Copilot CLI." />
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://fstubner.github.io/harness-router-mcp/" />
 <meta name="twitter:card" content="summary_large_image" />
@@ -361,9 +361,10 @@
     <span class="accent">Different result.</span>
   </h1>
   <p class="lede">
-    Other LLM routers stop at the model layer. <strong>Harness Router</strong> routes
-    agentic CLIs — recognising that Claude inside Cursor isn’t the same thing as
-    Claude inside Claude Code, even when it’s the exact same underlying model.
+    Most LLM routers just pick a model. This one picks the whole tool. Claude
+    inside Cursor and Claude inside Claude Code use the same weights, but they
+    don’t behave the same way. The CLI around the model matters as much as the
+    model itself, so <strong>Harness Router</strong> picks both.
   </p>
   <div class="cta">
     <code class="install"><span class="prompt">$</span>npx -y harness-router-mcp mcp</code>
@@ -379,16 +380,16 @@
   <span class="eyebrow">The framing</span>
   <h2>The harness is half the answer.</h2>
   <p>
-    A model alone doesn’t edit your codebase. The <em>harness</em> does — Cursor’s
-    workspace indexer, Claude Code’s Bash and Read tools, Codex’s
-    <code>--full-auto</code> loop, Gemini’s 2M-token context. The same weights
-    behave differently behind different scaffolds.
+    A model on its own doesn’t actually do anything to your code. The CLI it
+    runs in does. Cursor has a workspace indexer. Claude Code has Bash and file
+    editing built in. Codex runs in <code>--full-auto</code> mode. Gemini holds
+    two million tokens at once. The same models behave differently depending on
+    which CLI is calling them.
   </p>
   <p>
-    Harness Router scores every <strong>(model × harness)</strong> pair as a
-    first-class service. Your task lands in the harness whose tooling actually
-    fits the work, not just the harness whose underlying model tops a
-    leaderboard.
+    Harness Router treats every model and CLI combination as its own thing,
+    with its own score. Your task goes to whichever combination fits best, not
+    just to whatever has the highest model score on a leaderboard.
   </p>
 
   <div class="matrix-wrap">
@@ -424,61 +425,62 @@
       <div class="cell score-mid">0.82</div>
     </div>
     <p class="matrix-caption">
-      Illustrative composite scores. Sonnet is stronger in Cursor (codebase
-      indexing) than in Claude Code; Opus inverts the relationship. Same
-      weights, different harness, different fit.
+      Example numbers, not real measurements. Sonnet does better in Cursor than
+      in Claude Code because Cursor indexes your codebase. Opus is the other
+      way around. Same model, different CLI, different result.
     </p>
   </div>
 </section>
 
 <section id="how" class="reveal">
   <span class="eyebrow">How it picks</span>
-  <h2>Five signals, one decision.</h2>
+  <h2>How the router decides.</h2>
   <p>
-    For every dispatch, the router scores each enabled service and routes to
-    the highest live score. No coin-flips, no round-robin.
+    For each request, every available service gets a score. The highest one
+    wins. No coin flips, no round robins.
   </p>
   <ol class="scoring">
     <li>
       <strong>quality_score</strong>
-      Normalised ELO × thinking multiplier. Source priority: bundled
-      benchmark blend (Arena + Aider + SWE-bench) → live Arena code leaderboard
-      → conservative default.
+      How good the model is at coding. The number comes from a bundled blend
+      of Arena, Aider, and SWE-bench, with the live Arena code leaderboard as
+      a fallback and a safe default if neither is available.
     </li>
     <li>
       <strong>cli_capability</strong>
-      How much the harness adds beyond raw model. Reference points:
+      How much the CLI itself adds on top of the model. For reference,
       <code>claude_code</code> 1.10, <code>codex</code> 1.08,
       <code>cursor</code> 1.05, <code>gemini_cli</code> 1.00.
     </li>
     <li>
       <strong>capabilities[task_type]</strong>
-      Per-service relative strength on <code>execute</code> /
-      <code>plan</code> / <code>review</code>. Cursor crushes execute; Opus
-      wins plan; Gemini holds for long-context review.
+      How strong each service is at running code, planning, or reviewing.
+      Cursor wins on execute. Opus wins on plan. Gemini handles long-context
+      reviews well.
     </li>
     <li>
       <strong>quota_score</strong>
-      Live availability ∈ [0, 1], updated from each dispatch response. When a
-      free tier exhausts, traffic flows away from it.
+      A 0 to 1 number for how much free quota is left, updated from each
+      response. As a free tier runs out, traffic moves away from it.
     </li>
     <li>
       <strong>circuit_breaker</strong>
-      Failing services trip out of rotation automatically. Recovery is
-      half-open + probed — no more cascading retry storms.
+      When a service starts failing, it gets pulled out of rotation. After a
+      cooldown the router probes it once before bringing it back, so you don’t
+      get retry storms.
     </li>
   </ol>
 </section>
 
 <section id="tools" class="reveal">
-  <span class="eyebrow">MCP surface</span>
-  <h2>Twelve tools your client gets for free.</h2>
+  <span class="eyebrow">MCP tools</span>
+  <h2>Twelve tools your MCP client picks up automatically.</h2>
   <p>
-    Drop the server into Claude Desktop, Cursor, or any MCP client. The
-    routing logic, leaderboard cache, quota tracking, and circuit breakers
-    are wrapped behind twelve plain tools — and any third-party CLI you
-    register via YAML routes through <code>code_auto</code> with the
-    <code>harness</code> hint.
+    Add the server to Claude Desktop, Cursor, or any MCP client. You get
+    twelve tools that handle the routing, leaderboard caching, quota
+    tracking, and circuit breaking for you. Third-party CLIs added via
+    YAML route through <code>code_auto</code> with a <code>harness</code>
+    hint.
   </p>
 
   <div class="tools">
@@ -493,14 +495,14 @@
     <div class="tool"><div class="tool-name">get_quota_status</div><div class="tool-desc">JSON summary of quota usage and circuit-breaker state per service.</div></div>
     <div class="tool"><div class="tool-name">list_available_services</div><div class="tool-desc">Which services are enabled and CLI-reachable on this host.</div></div>
     <div class="tool"><div class="tool-name">dashboard</div><div class="tool-desc">Formatted overview of services, tiers, ELO, quota, and breaker state.</div></div>
-    <div class="tool"><div class="tool-name">setup</div><div class="tool-desc">Guided check of CLI auth, quota access, and config validity.</div></div>
+    <div class="tool"><div class="tool-name">setup</div><div class="tool-desc">Write router routing guidance to <code>~/.claude/CLAUDE.md</code> and install a SessionStart hook so Claude Code reaches for the router by default. Run this once per host.</div></div>
   </div>
 </section>
 
 <section id="install" class="reveal">
   <span class="eyebrow">Install</span>
   <h2>Two commands and a config block.</h2>
-  <p>Requires <strong>Node 20+</strong> and at least one installed CLI: <code>claude</code>, <code>codex</code>, <code>gemini</code>, Cursor’s <code>agent</code>, <code>opencode</code>, <code>copilot</code> (GitHub Copilot CLI), or any third-party CLI you register via YAML. Authenticate the ones you want to use, then drop the server into your MCP client.</p>
+  <p>You need Node 20 or newer and at least one CLI installed: <code>claude</code>, <code>codex</code>, <code>gemini</code>, Cursor’s <code>agent</code>, <code>opencode</code>, <code>copilot</code> (the GitHub Copilot CLI), or anything you register yourself in YAML. Log in to the ones you want to use, then add the server to your MCP client.</p>
 
   <h3>1. Install</h3>
 <pre><code><span class="comment"># One-shot — no global install</span>
@@ -531,7 +533,7 @@ harness-router-mcp --help</code></pre>
   gemini_cli:  { thinking_level: medium }
 
 <span class="kw">disabled</span>: [cursor]    <span class="comment"># skip an installed CLI</span></code></pre>
-  <p>Restart your MCP client. The twelve tools above are live in chat — and on the CLI as <code>harness-router-mcp dashboard --watch</code>.</p>
+  <p>Restart your MCP client. The twelve tools above are live in chat. You can also watch service status from the terminal with <code>harness-router-mcp dashboard --watch</code>.</p>
 </section>
 
 <footer>
