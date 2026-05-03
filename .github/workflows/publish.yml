@@ -54,7 +54,9 @@ jobs:
       - name: Set version from tag
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          npm version "$VERSION" --no-git-tag-version
+          # --allow-same-version makes this idempotent when package.json
+          # already carries the tag's version (the common case).
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
 
       - name: Build
         run: npm run build
