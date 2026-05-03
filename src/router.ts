@@ -269,7 +269,7 @@ export class Router {
     prompt: string,
     files: string[],
     workingDir: string,
-    opts: { hints?: RouteHints; maxFallbacks?: number } = {},
+    opts: { hints?: RouteHints } = {},
   ): AsyncIterable<RouterStreamEvent> {
     return this.streamWithSpan(prompt, files, workingDir, opts);
   }
@@ -278,7 +278,7 @@ export class Router {
     prompt: string,
     files: string[],
     workingDir: string,
-    opts: { hints?: RouteHints; maxFallbacks?: number },
+    opts: { hints?: RouteHints },
   ): AsyncGenerator<RouterStreamEvent> {
     const attrs: RouterSpanAttrs = { "router.op": "stream" };
     yield* withRouterStreamSpan(attrs, () => this.runStream(prompt, files, workingDir, opts));
@@ -288,18 +288,18 @@ export class Router {
     prompt: string,
     files: string[],
     workingDir: string,
-    opts: { hints?: RouteHints; maxFallbacks?: number },
+    opts: { hints?: RouteHints },
   ): AsyncGenerator<RouterStreamEvent> {
     const hints = opts.hints ?? {};
     const exclude = new Set<string>();
     let lastDecision: RoutingDecision | null = null;
 
-    // Practical bound on retries — a poorly-configured priority list with
-    // dozens of routes would otherwise loop forever on cascading failures.
-    const maxAttempts = Math.max(opts.maxFallbacks ?? 5, 1);
-    let attempts = 0;
-
-    while (attempts++ < maxAttempts) {
+    // No artificial attempt cap — pickService returns null when no routes
+    // remain (combination of `exclude` set, tripped breakers, unavailable
+    // dispatchers). Since `exclude` only grows and breaker state only goes
+    // tripped→tripped within a single dispatch (auto-resets need real time
+    // to elapse), this loop terminates after at most O(services) iterations.
+    while (true) {
       const decision = await this.pickService({ hints, exclude });
       if (!decision) {
         if (lastDecision === null) {
@@ -325,8 +325,13 @@ export class Router {
         continue;
       }
 
+      // Use the service's `cliModel` (the CLI-specific name) when set, so
+      // canonical routing names in `modelPriority` can differ from what each
+      // CLI actually accepts via `--model`. Falls back to the canonical name.
+      const cfg = this.config.services[decision.service];
+      const cliModel = cfg?.cliModel ?? decision.model;
       const dispatchOpts: { modelOverride?: string } = {};
-      if (decision.model) dispatchOpts.modelOverride = decision.model;
+      if (cliModel) dispatchOpts.modelOverride = cliModel;
 
       let finalResult: DispatchResult | null = null;
       for await (const event of dispatcher.stream(prompt, files, workingDir, dispatchOpts)) {
@@ -444,7 +449,7 @@ export class Router {
     prompt: string,
     files: string[],
     workingDir: string,
-    opts: { hints?: RouteHints; maxFallbacks?: number } = {},
+    opts: { hints?: RouteHints } = {},
   ): Promise<{ result: DispatchResult; decision: RoutingDecision | null }> {
     return withRouterSpan({ "router.op": "route" }, async (span) => {
       let lastDecision: RoutingDecision | null = null;

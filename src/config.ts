@@ -89,16 +89,26 @@ const CLI_DEFAULTS: Record<string, CliDefaults> = {
 };
 
 /**
- * Default model priority for auto-detected configs. Walked in this order
- * when no explicit `model_priority` is declared. Built from the union of
- * CLI_DEFAULTS' models — order is "good general-purpose default" picks.
+ * When no explicit `model_priority` is declared, derive it from the enabled
+ * services' `model` fields in declaration order. Each unique model appears
+ * once, in the order the first service that serves it was declared.
+ *
+ * This is preferable to a hardcoded list because (a) it can never include a
+ * model name no service can serve, and (b) it adapts to whatever CLIs the
+ * user has installed.
  */
-const DEFAULT_MODEL_PRIORITY: readonly string[] = [
-  "claude-opus-4.7",
-  "gpt-5.4",
-  "claude-sonnet-4.6",
-  "gemini-3.1-pro",
-];
+function deriveDefaultModelPriority(services: Record<string, ServiceConfig>): readonly string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const svc of Object.values(services)) {
+    if (!svc.enabled) continue;
+    const m = svc.model;
+    if (!m || seen.has(m)) continue;
+    seen.add(m);
+    out.push(m);
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // Env var interpolation (${VAR_NAME})
@@ -274,6 +284,7 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
       ...(str(svc.api_key) !== undefined ? { apiKey: str(svc.api_key)! } : {}),
       ...(str(svc.base_url) !== undefined ? { baseUrl: str(svc.base_url)! } : {}),
       ...(str(svc.model) !== undefined ? { model: str(svc.model)! } : {}),
+      ...(str(svc.cli_model) !== undefined ? { cliModel: str(svc.cli_model)! } : {}),
       tier: tierFrom(svc.tier),
       ...(() => {
         const t = thinkingFrom(svc.thinking_level);
@@ -290,9 +301,11 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
     services[name] = svcConfig;
   }
 
-  const cfg: RouterConfig = { services };
-  const priority = modelPriorityFrom(raw.model_priority);
-  if (priority) cfg.modelPriority = priority;
+  const explicitPriority = modelPriorityFrom(raw.model_priority);
+  const cfg: RouterConfig = {
+    services,
+    modelPriority: explicitPriority ?? deriveDefaultModelPriority(services),
+  };
   if (Array.isArray(raw.disabled)) cfg.disabled = (raw.disabled as string[]).slice();
   const geminiKey = str(raw.gemini_api_key);
   if (geminiKey) cfg.geminiApiKey = geminiKey;
@@ -329,6 +342,7 @@ async function detectServices(
       command: str(override.command) ?? defaults.command,
       ...(apiKeys[name] ? { apiKey: apiKeys[name] } : {}),
       model: str(override.model) ?? defaults.model,
+      ...(str(override.cli_model) !== undefined ? { cliModel: str(override.cli_model)! } : {}),
       tier: tierFrom(override.tier ?? "subscription"),
       ...(() => {
         const overrideThinking = thinkingFrom(override.thinking_level);
@@ -404,6 +418,7 @@ function addEndpoints(services: Record<string, ServiceConfig>, raw: Record<strin
       type: "openai_compatible",
       baseUrl,
       model,
+      ...(str(ep.cli_model) !== undefined ? { cliModel: str(ep.cli_model)! } : {}),
       command: "",
       ...(str(ep.api_key) !== undefined ? { apiKey: str(ep.api_key)! } : {}),
       tier: tierFrom(ep.tier ?? "metered"),
@@ -463,7 +478,7 @@ export async function loadConfig(
   const explicitPriority = modelPriorityFrom(raw.model_priority);
   const cfg: RouterConfig = {
     services,
-    modelPriority: explicitPriority ?? DEFAULT_MODEL_PRIORITY,
+    modelPriority: explicitPriority ?? deriveDefaultModelPriority(services),
     disabled,
   };
   if (apiKeys.gemini_cli) cfg.geminiApiKey = apiKeys.gemini_cli;

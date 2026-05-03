@@ -76,10 +76,30 @@ export interface ServiceConfig {
   apiKey?: string;
   baseUrl?: string;
   /**
-   * Canonical model ID this service serves. Used by the router to build
-   * the `model -> [services]` route table from the user's `modelPriority`.
+   * Canonical model ID this service serves. Used by the router to match
+   * services against the user's `modelPriority` list — the strings here
+   * and in `modelPriority` must agree literally for routing to work.
+   *
+   * Pick whatever convention you want (semantic versions, dates, aliases),
+   * just keep it consistent.
    */
   model?: string;
+  /**
+   * What to actually pass to the underlying CLI's `--model` flag at dispatch
+   * time. Defaults to `model` when absent. Use this when the canonical name
+   * you want for routing differs from what the CLI accepts.
+   *
+   * Example: route under "claude-opus-4-7" canonically, but Claude Code's
+   * CLI expects the alias "opus":
+   *
+   *   model:     claude-opus-4-7
+   *   cli_model: opus
+   *
+   * Different services can serve the same canonical model with different
+   * CLI names (e.g. claude_code wants "opus", cursor wants
+   * "claude-3-opus-thinking-max"). This field is the join.
+   */
+  cliModel?: string;
   /**
    * Cost tier. Defaults to "subscription" when omitted (the common case
    * for CLI services backed by paid subscriptions).

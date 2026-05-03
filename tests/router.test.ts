@@ -84,8 +84,10 @@ class FakeDispatcher implements Dispatcher {
 interface ServiceSpec {
   /** Defaults to the service name. */
   harness?: string;
-  /** Model this service serves (a service serves one model in the new shape). */
+  /** Model this service serves (canonical name, used for routing). */
   model: string;
+  /** Optional CLI-specific name for `--model`. Defaults to `model` when omitted. */
+  cliModel?: string;
   tier?: "subscription" | "metered";
   /** Dispatcher behaviour. */
   fake?: Omit<FakeDispatcherOpts, "log">;
@@ -117,6 +119,7 @@ function setup(input: SetupInput): {
       harness: spec.harness ?? name,
       command: name,
       model: spec.model,
+      ...(spec.cliModel !== undefined ? { cliModel: spec.cliModel } : {}),
       tier: spec.tier ?? "subscription",
     };
   }
@@ -385,9 +388,8 @@ describe("Router.stream — tier and model fallback", () => {
         anthropic_api_opus: { model: "claude-opus", tier: "metered", fake: { rateLimit: true } },
         cursor: { model: "claude-sonnet", tier: "subscription", fake: { succeed: true } },
       },
-      // Allow plenty of attempts so we walk all 3 routes.
     });
-    const { decisions } = await streamAll(router, { maxFallbacks: 5 });
+    const { decisions } = await streamAll(router);
     expect(decisions).toEqual([
       "claude-opus:subscription→claude_code",
       "claude-opus:metered→anthropic_api_opus",
@@ -403,7 +405,7 @@ describe("Router.stream — tier and model fallback", () => {
         openai_api: { model: "gpt-5", tier: "metered", fake: { rateLimit: true } },
       },
     });
-    const { events } = await streamAll(router, { maxFallbacks: 5 });
+    const { events } = await streamAll(router);
     // The terminal completion has success=false. Because rate-limited
     // dispatches still emit completion events, the last event is a real
     // dispatcher completion, not a synthesised "no available routes" one.
@@ -421,5 +423,30 @@ describe("Router.stream — tier and model fallback", () => {
     });
     await streamAll(router);
     expect(logs.codex![0]!.modelOverride).toBe("gpt-5");
+  });
+
+  it("uses cliModel when set, falling back to canonical model otherwise", async () => {
+    // Two services serve the same canonical model "claude-opus" but each
+    // CLI accepts a different --model name. The router should match on
+    // canonical for routing and pass cli-specific for dispatch.
+    const { router, logs } = setup({
+      modelPriority: ["claude-opus"],
+      services: {
+        // claude_code rate-limits so we fall through to cursor.
+        claude_code: {
+          model: "claude-opus",
+          cliModel: "opus",
+          fake: { rateLimit: true },
+        },
+        cursor: {
+          model: "claude-opus",
+          cliModel: "claude-3-opus-thinking-max",
+          fake: { succeed: true },
+        },
+      },
+    });
+    await streamAll(router);
+    expect(logs.claude_code![0]!.modelOverride).toBe("opus");
+    expect(logs.cursor![0]!.modelOverride).toBe("claude-3-opus-thinking-max");
   });
 });

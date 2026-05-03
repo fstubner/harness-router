@@ -47,7 +47,24 @@ quotaScore, reason}`. Dropped: `qualityScore`, `cliCapability`,
   rate-limit and surfaced the error. The new router excludes the rate-limited
   service for the rest of this dispatch _and_ trips the breaker, then falls
   through to the next route. The user gets a response from a different service
-  instead of an error.
+  instead of an error. The breaker stays tripped for the provider's
+  `retryAfter` duration; subsequent dispatches skip the route immediately
+  until the cooldown elapses, at which point the next read of `isTripped`
+  auto-resets.
+- **`cli_model` field.** A service can declare both a canonical `model:` (used
+  by the router to match against `model_priority`) and a `cli_model:` (passed
+  to the underlying CLI's `--model` flag). This lets two different CLIs serve
+  the same canonical model under different naming conventions — Claude Code's
+  `opus` and the Anthropic API's `claude-opus-4-20250101` are the same model
+  for routing purposes.
+- **Default `model_priority`** is now derived from the configured services'
+  `model:` fields in declaration order, instead of a hardcoded list. This
+  prevents the default priority from referencing models that no installed
+  service can serve.
+- **No artificial fallback cap.** v0.1's `maxFallbacks: 2` default capped
+  retries; the new router relies on `pickService` returning `null` when no
+  routes remain. Combined with the monotonically-growing exclude set and
+  the breaker filter, the loop terminates in at most O(services) iterations.
 
 ### Code reduction
 

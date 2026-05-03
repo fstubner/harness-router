@@ -218,7 +218,8 @@ claude_code_opus:
   enabled: true
   harness: claude_code
   command: claude
-  model: claude-opus-4.7
+  model: claude-opus-4.7 # canonical name (matches model_priority entries)
+  cli_model: opus # what `claude --model` actually accepts
   tier: subscription
 
 # Metered API: only used when subscription routes for the same model are exhausted.
@@ -226,10 +227,29 @@ anthropic_api:
   enabled: true
   type: openai_compatible
   base_url: https://api.anthropic.com/v1
-  model: claude-opus-4.7
+  model: claude-opus-4.7 # same canonical name → both routes serve the same model
+  cli_model: claude-opus-4-20250101 # what the API expects
   api_key: ${ANTHROPIC_API_KEY}
   tier: metered
 ```
+
+### Two model names per service?
+
+`model:` is the canonical ID — used by the router to match services against
+`model_priority` entries. Pick whatever convention you want (semantic versions,
+date-suffixed IDs, aliases), just keep it consistent across `model_priority`
+and every service's `model:` field.
+
+`cli_model:` is what gets passed to the underlying CLI's `--model` flag at
+dispatch time. Use it when the canonical name you want for routing differs
+from what the CLI accepts. When omitted, falls back to `model`.
+
+This is the join that lets two different CLIs serve "the same model" with
+different name conventions. Claude Code's CLI calls Opus `opus`; Cursor's
+agent might call it `claude-3-opus-thinking-max`; the Anthropic API wants the
+full versioned ID. They're all the same model from the router's perspective —
+it walks `model_priority`, finds every service whose `model:` matches, and
+hands each one its own `cli_model:` at dispatch time.
 
 OpenAI-compatible endpoints (Ollama, LM Studio, OpenRouter, raw OpenAI/Anthropic
 APIs) work the same way — they default to `tier: metered` since that's how
