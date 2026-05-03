@@ -76,7 +76,7 @@ describe("startMcpHttpServer — single session", () => {
       // configured — so even with services: {} we get the full tool list.
       expect(resp.tools.length).toBeGreaterThan(0);
       const names = resp.tools.map((t) => t.name);
-      expect(names).toContain("code_auto");
+      expect(names).toContain("code");
       expect(names).toContain("dashboard");
     } finally {
       await close();

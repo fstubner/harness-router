@@ -119,28 +119,29 @@ export function renderDashboard(state: DashboardState): string {
   );
   out.push("");
 
-  // Group services by tier
-  const byTier: Map<number, typeof state.services> = new Map();
+  // Group services by cost tier
+  const byTier: Map<string, typeof state.services> = new Map();
   for (const svcEntry of state.services) {
-    const tier = svcEntry.config.tier;
+    const tier = svcEntry.config.tier ?? "subscription";
     const bucket = byTier.get(tier);
     if (bucket) bucket.push(svcEntry);
     else byTier.set(tier, [svcEntry]);
   }
 
-  const tierLabels: Record<number, string> = {
-    1: "Tier 1 — Frontier",
-    2: "Tier 2 — Strong",
-    3: "Tier 3 — Fast/Local",
+  const tierLabels: Record<string, string> = {
+    subscription: "Subscription — flat-rate, zero marginal cost",
+    metered: "Metered — per-token API",
   };
+  const tierOrder = ["subscription", "metered"];
 
-  for (const tier of [...byTier.keys()].sort((a, b) => a - b)) {
-    const label = tierLabels[tier] ?? `Tier ${tier}`;
+  for (const tier of tierOrder.filter((t) => byTier.has(t))) {
+    const label = tierLabels[tier] ?? tier;
     out.push(`── ${label} ──────────────────────────────`);
     out.push("");
     for (const svcEntry of byTier.get(tier)!) {
       const { name, config: svc, reachable } = svcEntry;
       out.push(`  ${statusIcon(svc.enabled, reachable, ansi)} ${name.toUpperCase()}`);
+      if (svc.model) out.push(`      model      : ${svc.model}`);
       if (svc.type === "openai_compatible") {
         out.push(`      connection : HTTP API  ${svc.baseUrl ?? "(no base_url)"}`);
       } else {

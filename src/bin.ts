@@ -25,7 +25,6 @@ import { Router } from "./router.js";
 import { VERSION } from "./version.js";
 import { loadConfig } from "./config.js";
 import { QuotaCache } from "./quota.js";
-import { LeaderboardCache } from "./leaderboard.js";
 import { buildDispatchers } from "./mcp/dispatcher-factory.js";
 import { startMcpHttpServer, startMcpServer } from "./mcp/server.js";
 import { initObservability } from "./observability/index.js";
@@ -53,8 +52,7 @@ async function cmdRoute(prompt: string, configPath: string | undefined): Promise
     return 1;
   }
   const quota = new QuotaCache(dispatchers);
-  const leaderboard = new LeaderboardCache();
-  const router = new Router(config, quota, dispatchers, leaderboard);
+  const router = new Router(config, quota, dispatchers);
 
   let seenDecision = false;
   let finalSuccess = false;
@@ -64,10 +62,9 @@ async function cmdRoute(prompt: string, configPath: string | undefined): Promise
   for await (const { event, decision } of router.stream(prompt, [], process.cwd())) {
     if (decision && !seenDecision) {
       process.stdout.write(
-        `-> service: ${decision.service}  tier: ${decision.tier}  score: ${decision.finalScore.toFixed(4)}\n`,
+        `-> service: ${decision.service}  model: ${decision.model}  tier: ${decision.tier}  quota: ${decision.quotaScore.toFixed(2)}\n`,
       );
       process.stdout.write(`   reason: ${decision.reason}\n`);
-      if (decision.model) process.stdout.write(`   model: ${decision.model}\n`);
       process.stdout.write("--- output ---\n");
       seenDecision = true;
     }
@@ -119,9 +116,8 @@ async function cmdListServices(configPath: string | undefined): Promise<number> 
     const parts = [
       name,
       `harness=${harness}`,
-      `tier=${svc.tier}`,
-      `weight=${svc.weight}`,
-      svc.leaderboardModel ? `lb=${svc.leaderboardModel}` : "",
+      `tier=${svc.tier ?? "subscription"}`,
+      svc.model ? `model=${svc.model}` : "",
     ].filter(Boolean);
     rows.push(parts.join("  "));
   }
@@ -185,8 +181,7 @@ async function cmdDashboard(
   const config = await loadConfig(configPath);
   const dispatchers = await buildDispatchers(config);
   const quota = new QuotaCache(dispatchers);
-  const leaderboard = new LeaderboardCache();
-  const router = new Router(config, quota, dispatchers, leaderboard);
+  const router = new Router(config, quota, dispatchers);
 
   const isTty = Boolean(process.stdout.isTTY);
 

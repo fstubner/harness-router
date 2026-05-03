@@ -29,37 +29,33 @@ const onlyClaudeFound: WhichFn = async (cmd) => (cmd === "claude" ? "/usr/bin/cl
 describe("loadConfig — legacy full format", () => {
   it("passes a YAML with a top-level services: key through verbatim", async () => {
     const yamlText = `
+model_priority:
+  - claude-opus-4.7
+  - llama3
 services:
   alpha:
     enabled: true
     type: cli
     command: alpha-bin
-    tier: 1
-    weight: 1.5
-    cli_capability: 1.10
-    leaderboard_model: claude-opus-4-6
-    capabilities:
-      execute: 0.9
-      plan: 1.0
-      review: 0.95
+    model: claude-opus-4.7
+    tier: subscription
   beta:
     enabled: false
     type: openai_compatible
     base_url: http://localhost:11434/v1
     model: llama3
-    tier: 3
+    tier: metered
 `;
     const p = await writeTmpYaml("config.yaml", yamlText);
     const cfg = await loadConfig(p, { whichFn: noCliFound });
     expect(Object.keys(cfg.services).sort()).toEqual(["alpha", "beta"]);
-    expect(cfg.services.alpha!.tier).toBe(1);
-    expect(cfg.services.alpha!.weight).toBeCloseTo(1.5, 10);
-    expect(cfg.services.alpha!.cliCapability).toBeCloseTo(1.1, 10);
-    expect(cfg.services.alpha!.leaderboardModel).toBe("claude-opus-4-6");
-    expect(cfg.services.alpha!.capabilities.execute).toBeCloseTo(0.9, 10);
+    expect(cfg.services.alpha!.tier).toBe("subscription");
+    expect(cfg.services.alpha!.model).toBe("claude-opus-4.7");
     expect(cfg.services.beta!.enabled).toBe(false);
     expect(cfg.services.beta!.type).toBe("openai_compatible");
     expect(cfg.services.beta!.baseUrl).toBe("http://localhost:11434/v1");
+    expect(cfg.services.beta!.tier).toBe("metered");
+    expect(cfg.modelPriority).toEqual(["claude-opus-4.7", "llama3"]);
   });
 
   it("parses a `generic_cli` service recipe (extensibility — third-party CLIs)", async () => {
@@ -75,9 +71,7 @@ services:
         "    type: generic_cli",
         "    harness: my_custom",
         "    command: my-cli",
-        "    tier: 2",
-        "    weight: 1",
-        "    cli_capability: 1",
+        "    tier: subscription",
         "    args_before_prompt: [run, --no-color]",
         "    args_after_prompt: [--verbose]",
         "    model_flag: --model",
@@ -116,8 +110,8 @@ describe("loadConfig — auto-detect + overrides", () => {
     const svc = cfg.services.claude_code!;
     expect(svc.harness).toBe("claude_code");
     expect(svc.command).toBe("claude");
-    expect(svc.cliCapability).toBeCloseTo(1.1, 10);
-    expect(svc.leaderboardModel).toBe("claude-opus-4-6");
+    expect(svc.tier).toBe("subscription");
+    expect(svc.model).toBeTruthy();
   });
 
   it("returns all default services when all CLIs are found", async () => {
@@ -136,17 +130,14 @@ describe("loadConfig — auto-detect + overrides", () => {
     const yamlText = `
 overrides:
   claude_code:
-    weight: 1.5
-    capabilities:
-      execute: 0.5
+    model: claude-opus-4.7
 `;
     const p = await writeTmpYaml("minimal.yaml", yamlText);
     const cfg = await loadConfig(p, { whichFn: allCliFound });
     const cc = cfg.services.claude_code!;
-    expect(cc.weight).toBeCloseTo(1.5, 10);
-    expect(cc.capabilities.execute).toBeCloseTo(0.5, 10);
-    // Non-overridden capability stays at default
-    expect(cc.capabilities.plan).toBeCloseTo(1.0, 10);
+    expect(cc.model).toBe("claude-opus-4.7");
+    // Other fields stay at defaults.
+    expect(cc.tier).toBe("subscription");
   });
 
   it("honors the disabled list", async () => {
@@ -158,22 +149,19 @@ disabled: [cursor, codex, opencode, copilot]
     expect(Object.keys(cfg.services).sort()).toEqual(["claude_code", "gemini_cli"]);
   });
 
-  it("adds endpoints from the endpoints: list", async () => {
+  it("adds endpoints from the endpoints: list and defaults them to metered tier", async () => {
     const yamlText = `
 endpoints:
   - name: ollama
     base_url: http://localhost:11434/v1
     model: llama3
-    tier: 3
-    weight: 0.8
 `;
     const p = await writeTmpYaml("endpoints.yaml", yamlText);
     const cfg = await loadConfig(p, { whichFn: noCliFound });
     expect(cfg.services.ollama).toBeDefined();
     expect(cfg.services.ollama!.type).toBe("openai_compatible");
     expect(cfg.services.ollama!.baseUrl).toBe("http://localhost:11434/v1");
-    expect(cfg.services.ollama!.tier).toBe(3);
-    expect(cfg.services.ollama!.weight).toBeCloseTo(0.8, 10);
+    expect(cfg.services.ollama!.tier).toBe("metered");
   });
 });
 

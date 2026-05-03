@@ -1,7 +1,7 @@
 {
   "name": "harness-router-mcp",
-  "version": "0.1.0",
-  "description": "MCP server that routes coding tasks across AI CLI harnesses — Claude Code, Cursor, Codex, Gemini — with quota-aware load balancing, circuit breaking, and (model × harness) scoring.",
+  "version": "0.2.0",
+  "description": "MCP server that routes coding tasks model-first across your AI subscriptions and APIs. Use Claude Pro, ChatGPT Plus, Cursor, Copilot CLI, opencode, etc. before falling back to metered API.",
   "keywords": [
     "mcp",
     "model-context-protocol",

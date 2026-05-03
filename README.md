@@ -1,7 +1,7 @@
 # harness-router-mcp
 
-> **Same model, different harness, different result.**
-> An MCP server that routes coding tasks across Claude Code, Cursor, Codex, Gemini CLI, OpenCode, and GitHub Copilot CLI — quota-aware, circuit-breaking, and (model × harness) scored. Plug in any other CLI with a one-line YAML entry.
+> **Use your AI subscriptions before paying for metered API.**
+> An MCP server that routes coding tasks model-first across whatever CLIs you have installed. Subscription-backed CLIs (Claude Code, Cursor, Codex, Copilot CLI, opencode) are tried first; metered API is the fallback.
 
 [![npm version](https://img.shields.io/npm/v/harness-router-mcp.svg)](https://www.npmjs.com/package/harness-router-mcp)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
@@ -11,43 +11,59 @@
 
 ---
 
-## Why a _harness_ router?
+## What this does
 
-Other LLM routers (OpenRouter, LiteLLM, etc.) route raw model APIs. Harness Router routes **agentic CLIs** — recognising that Claude inside Cursor isn't the same thing as Claude inside Claude Code, even though it's the same underlying model.
+You declare a model preference list — for example:
 
-Each configured service is a **(model, harness)** pair:
-
-```
-claude_code_opus  = claude-opus-4-6        × claude_code harness
-cursor_sonnet     = claude-sonnet-4-6      × cursor harness
-codex_gpt54       = gpt-5.4                × codex harness
-gemini31pro       = gemini-3.1-pro-preview × gemini_cli harness
-opencode_sonnet   = claude-sonnet-4-6      × opencode harness
+```yaml
+model_priority:
+  - claude-opus-4.7
+  - gpt-5.4
+  - claude-sonnet-4.6
 ```
 
-The harness brings tooling — Cursor's codebase indexing, Claude Code's Bash/Read/Edit, Codex's `--full-auto` execution, Gemini's 2M-token context window, OpenCode's provider-agnostic tool layer with multi-subscription support. Your task lands in the harness whose tooling actually fits the work, not just the harness whose underlying model is highest on a leaderboard.
+For every coding request, the router walks down that list. For each model, it
+tries each subscription-backed CLI that can serve it (highest free quota
+first). When subscriptions are exhausted, it falls through to metered API for
+the same model. Only when every route for the top model is dead does it drop
+to the next model.
 
-## What it does
+The point: if you pay for Claude Pro and ChatGPT Plus, you can burn through
+that flat-rate quota before any per-token API charges kick in — without
+manually switching tools when one rate-limits.
 
-- **`code_auto`** — picks the best available (model × harness) for the task. Hints accepted: `task_type`, `harness`, `prefer_large_context`, explicit `service`.
-- **`code_mixture`** — fans the prompt out to multiple services in parallel and returns all outputs for synthesis. Useful when you want a second opinion on architecture decisions.
-- **Per-harness tools** — `code_with_claude`, `code_with_cursor`, `code_with_codex`, `code_with_gemini`, `code_with_opencode`, `code_with_copilot` for explicit routing.
-- **Quota-aware** — tracks free-tier usage per service and steers traffic away from exhausted ones.
-- **Circuit breaker** — failing services trip out of rotation automatically; recovery is half-open + probed.
-- **Live dashboard** — `harness-router-mcp dashboard --watch` for a TTY view of tier, ELO, quota, and breaker state per service.
+## What it gives you
+
+Four MCP tools that show up in any MCP-aware host (Claude Desktop, Cursor's
+agent panel, Claude Code, Codex desktop):
+
+- **`code`** — main routing tool. Walks your model priority + tier list and
+  dispatches. Hints: `model` (bump a model to the front) or `service` (force a
+  specific CLI).
+- **`code_mixture`** — fan a prompt out to every available service in parallel.
+  One result per service; you synthesise.
+- **`dashboard`** — text status of every configured service: model, tier
+  (subscription / metered), quota left, breaker state, the router's current pick.
+- **`get_quota_status`** — JSON version of the dashboard, for tooling.
+
+Plus three prompts in the host's slash menu:
+
+| Prompt           | What it does                                                                          |
+| ---------------- | ------------------------------------------------------------------------------------- |
+| `route-task`     | Send a task through `code` with optional model override. The most common entry point. |
+| `compare-models` | Fan a task out via `code_mixture` to every available service for synthesis.           |
+| `health-check`   | Walk through `dashboard` + `get_quota_status` to diagnose routing problems.           |
+
+Plus the operational machinery you'd want anyway:
+
+- **Quota tracking** — reads rate-limit headers per dispatch, scores
+  availability per service, prefers higher-headroom routes.
+- **Circuit breaker** — services that rate-limit get pulled from rotation
+  automatically; recovery is half-open + probed.
+- **Live dashboard** — `harness-router-mcp dashboard --watch` for a TTY view.
+- **Hot config reload** — edit `config.yaml` while the server runs; changes
+  apply between tool calls without a restart.
 - **OpenTelemetry** — optional OTLP export of dispatch / routing / MCP-tool spans.
-
-### Built-in MCP prompts
-
-The server also advertises five prompts via the MCP `prompts/list` capability — they show up in the host's prompt picker (Claude Desktop's slash menu, Cursor's command palette) and serve as built-in documentation for the server's tools:
-
-| Prompt                    | What it does                                                                                     |
-| ------------------------- | ------------------------------------------------------------------------------------------------ |
-| `route-coding-task`       | Sends a task through `code_auto` with optional `task_type` hint. The most common entry point.    |
-| `compare-implementations` | Fans a task out via `code_mixture` and synthesizes the strongest answer from each harness.       |
-| `harness-health-check`    | Inspects every service's reachability, quota, and breaker state — diagnostic flow.               |
-| `onboard-coding-stack`    | Walks through running `harness-router-mcp init` and fixing each not-ready harness one at a time. |
-| `pick-best-harness`       | Recommends a harness for a task without dispatching. Explanatory flow.                           |
 
 ## Install
 
@@ -175,69 +191,49 @@ Add to `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claud
 }
 ```
 
-Restart Claude Desktop. The 12 MCP tools (`code_auto`, `code_mixture`, `code_with_*` for each of the 6 built-in harnesses, `get_quota_status`, `list_available_services`, `dashboard`, `setup`) become available in the chat.
+Restart Claude Desktop. The four MCP tools (`code`, `code_mixture`, `dashboard`, `get_quota_status`) become available in the chat.
 
-## Routing & scoring
+## How routing actually works
 
-Each enabled service is scored per task:
+The algorithm is short. Walk the user's `model_priority` list. For each model:
 
-```
-score = quality_score × cli_capability × capabilities[task_type] × quota_score × weight
-```
+1. Find every enabled service whose `model:` matches and whose dispatcher is
+   reachable + breaker-closed.
+2. Split those candidates into `subscription` and `metered` tiers (by the
+   service's `tier:` field).
+3. Try subscription routes first, in quota-descending order. If one rate-limits,
+   skip to the next. When all subscription routes are exhausted, fall through
+   to metered.
+4. When every route for the current model has failed, drop to the next model.
 
-| Term                      | Meaning                                                                                                                                                                                          |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `quality_score`           | normalized ELO × thinking multiplier. ELO source priority: bundled `data/coding_benchmarks.json` (Arena + Aider + SWE-bench blend) → live Arena AI Code leaderboard (24h cached) → 0.85 default. |
-| `cli_capability`          | how much the harness adds beyond the raw model. Reference: `claude_code` 1.10, `codex` 1.08, `cursor` 1.05, `gemini_cli` 1.00.                                                                   |
-| `capabilities[task_type]` | per-service relative strength on `execute` / `plan` / `review`.                                                                                                                                  |
-| `quota_score`             | live availability ∈ [0, 1], updated from each dispatch response.                                                                                                                                 |
-| `weight`                  | static preference multiplier from config (default 1.0).                                                                                                                                          |
+That's the whole thing. No quality scores, no per-harness multipliers — those
+were vibes. The data the router actually has is "is this CLI installed",
+"is its breaker closed", and "what's its quota score".
 
-Services group into tiers (Frontier / Strong / Fast) by ELO. Tier 1 is always tried first; the router only falls through to tier 2/3 when every tier-1 service is circuit-broken or quota-exhausted.
-
-### Model escalation
-
-A service can auto-escalate to a stronger model on reasoning-heavy task types:
+## Adding a service
 
 ```yaml
-claude_code_sonnet:
-  model: claude-sonnet-4-6
-  escalate_model: claude-opus-4-6
-  escalate_on: [plan, review] # Sonnet for execute, Opus for plan/review
-```
-
-`code_auto` resolves the right model per task before dispatch — Sonnet speed on execution, Opus depth on design decisions, no manual switching.
-
-## Adding a new service
-
-```yaml
-cursor_opus:
+# Subscription-backed: routes through this CLI count as zero marginal cost.
+claude_code_opus:
   enabled: true
-  harness: cursor
-  command: agent
-  model: claude-opus-4-6-thinking-max
-  tier: 1
-  leaderboard_model: "claude-opus-4-6"
-  cli_capability: 1.05
-  weight: 1.0
-  capabilities:
-    execute: 0.94
-    plan: 0.97
-    review: 0.96
-```
+  harness: claude_code
+  command: claude
+  model: claude-opus-4.7
+  tier: subscription
 
-OpenAI-compatible endpoints (Ollama, LM Studio, OpenRouter) work too:
-
-```yaml
-ollama_local:
+# Metered API: only used when subscription routes for the same model are exhausted.
+anthropic_api:
   enabled: true
   type: openai_compatible
-  base_url: http://localhost:11434/v1
-  model: llama3.2
-  api_key: ""
-  tier: 3
-  weight: 0.6
+  base_url: https://api.anthropic.com/v1
+  model: claude-opus-4.7
+  api_key: ${ANTHROPIC_API_KEY}
+  tier: metered
 ```
+
+OpenAI-compatible endpoints (Ollama, LM Studio, OpenRouter, raw OpenAI/Anthropic
+APIs) work the same way — they default to `tier: metered` since that's how
+they bill.
 
 ### Adding a third-party CLI without writing code
 
@@ -254,7 +250,9 @@ services:
 That's it. The router auto-promotes any service with `command:` and an
 unknown harness to `GenericCliDispatcher`, which runs `<command> "<prompt>"`
 and treats stdout as the response. Route via
-`code_auto({ prompt, hints: { harness: "my_custom_cli" } })`.
+`code({ prompt, hints: { service: "my_custom_cli" } })` to force it, or just
+include it in the priority list and the router will pick it when its model
+comes up.
 
 For non-trivial CLIs (different prompt-delivery, file flags, JSON output
 parsing, env vars) extend the recipe — `type: generic_cli` is optional but
@@ -266,10 +264,10 @@ my_custom_cli:
   type: generic_cli
   harness:
     my_custom_cli # used as the harness id; route via
-    # code_auto with hints.harness="my_custom_cli"
+    # used as the harness id; route via the model priority list
   command: my-cli # bare name; resolved via `which`
   tier: 2
-  cli_capability: 1.0
+  tier: subscription
 
   # Argv assembly:
   #   [...args_before_prompt, ?--model <m>, ?--workdir <dir>,
@@ -297,46 +295,25 @@ my_custom_cli:
     #   {input_tokens,output_tokens},
     #   {prompt_tokens,completion_tokens}
 
-  capabilities:
-    execute: 0.9
-    plan: 0.7
-    review: 0.7
+  model: my-cli-default-model
 ```
 
 What you get for free:
 
-- **Routing**: invoke via `code_auto` (or `code_mixture`) with the
-  `harness:` hint set to the YAML key — e.g.
-  `code_auto({ prompt, hints: { harness: "my_custom_cli" } })`.
-  The five built-in harnesses each have a dedicated `code_with_<harness>`
-  shortcut tool; **`code_with_<custom>` is not auto-registered for
-  `generic_cli` services** (the MCP tool list is built once at startup
-  from the static built-in registry). Use the `harness:` hint instead.
+- **Routing**: include the service in your `model_priority` (declare the
+  service's `model:`). Or force it via
+  `code({ prompt, hints: { service: "my_custom_cli" } })`.
 - Quota / circuit-breaker integration with rate-limit detection on stderr
 - Onboarding probe (`init`) with the same install/verify/ready flow as
   built-in harnesses
 - Hot config reload — change the recipe and the router picks it up
-  for routing decisions (the MCP tool registry stays static — restart
-  the server to add/remove `code_with_<harness>` tools)
+  for routing decisions (between tool calls, no restart)
 
 When to write a real dispatcher instead: if your CLI emits live tool-use
 or thinking events you want to stream mid-run, or if it needs per-call
-config-file mutations (the way Gemini's settings.json patch works). The
-generic dispatcher treats the CLI as a black box: argv in, plain stdout
-(or stdin/flag-fed prompt) out. That's enough for most third-party tools.
-
-**Known gaps** (open issues, not stoppers):
-
-- No `code_with_<custom>` shortcut tool gets auto-registered for
-  third-party `generic_cli` services — the MCP tool list is built once at
-  startup from the static built-in registry of 6 harnesses. Route
-  third-party services via `code_auto({hints:{harness:"<id>"}})` instead.
-  Generic CLI services DO appear in the `harness-router-mcp init`
-  per-harness checklist (`auth_command` from the recipe is surfaced as
-  the auth CTA).
-- File context is appended to the prompt as a `Files to work with: …`
-  block. There's no `--file <path>` per-file flag injection — if your CLI
-  needs that, write a wrapper script or a hand-tuned dispatcher.
+config-file mutations. The generic dispatcher treats the CLI as a black
+box: argv in, plain stdout (or stdin/flag-fed prompt) out. That's enough
+for most third-party tools.
 
 ## CLI
 
@@ -346,8 +323,8 @@ harness-router-mcp init --install         # auto-run npm install -g for missing 
 harness-router-mcp mcp                    # MCP server on stdio
 harness-router-mcp mcp --http 7330        # MCP server over streamable HTTP
 harness-router-mcp route "<prompt>"       # one-shot dispatch with live streaming
-harness-router-mcp list-services          # show enabled (model × harness) services
-harness-router-mcp dashboard              # tier / ELO / quota / breaker snapshot
+harness-router-mcp list-services          # show enabled services (model + tier)
+harness-router-mcp dashboard              # model priority / quota / breaker snapshot
 harness-router-mcp dashboard --watch      # re-render every --interval ms
 ```
 

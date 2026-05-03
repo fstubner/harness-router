@@ -15,11 +15,7 @@ function svc(name: string, overrides: Partial<ServiceConfig> = {}): ServiceConfi
     name,
     enabled: true,
     type: "cli",
-    tier: 1,
-    weight: 1,
-    cliCapability: 1,
-    escalateOn: [],
-    capabilities: {},
+    tier: "subscription",
     ...overrides,
   } as ServiceConfig;
 }
@@ -33,7 +29,7 @@ function fixtureState(overrides: Partial<DashboardState> = {}): DashboardState {
         config: svc("local_llm", {
           type: "openai_compatible",
           baseUrl: "http://localhost:11434/v1",
-          tier: 3,
+          tier: "metered",
         }),
         reachable: true,
       },
@@ -59,8 +55,8 @@ describe("renderDashboard", () => {
     expect(output).toContain("harness-router-mcp — live dashboard");
     expect(output).toContain("CLAUDE_CODE");
     expect(output).toContain("LOCAL_LLM");
-    expect(output).toContain("Tier 1 — Frontier");
-    expect(output).toContain("Tier 3 — Fast/Local");
+    expect(output).toContain("Subscription —");
+    expect(output).toContain("Metered —");
     expect(output).toContain("breaker: OPEN — 45s until reset");
     expect(output).toContain("Ready to route: claude_code, local_llm");
   });

@@ -57,11 +57,7 @@ function svcOf(overrides: Partial<ServiceConfig> = {}): ServiceConfig {
     type: "generic_cli",
     harness: "my_cli",
     command: "my-cli",
-    tier: 2,
-    weight: 1,
-    cliCapability: 1,
-    escalateOn: [],
-    capabilities: {},
+    tier: "subscription",
     ...overrides,
   };
 }

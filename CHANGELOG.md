@@ -9,6 +9,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (empty — track changes for the next release here)
 
+## [0.2.0] — 2026-05-03
+
+Major redirect: the router is now **model-first**, not harness-first. The pitch
+shifted to "use your AI subscriptions before metered API." Most of the v0.1
+scoring layer turned out to be decorative and was removed.
+
+### Breaking changes
+
+- **MCP tool surface collapsed from 12 tools to 4.** The new tools are `code`,
+  `code_mixture`, `dashboard`, and `get_quota_status`. The 6 `code_with_<harness>`
+  tools, `code_auto`, `list_available_services`, and `setup` are all gone. Most
+  use cases in v0.1 are now `code` with optional `hints.service` / `hints.model`.
+- **MCP prompts collapsed from 5 to 3.** New: `route-task`, `compare-models`,
+  `health-check`. The previous prompts referenced the dropped tools.
+- **`ServiceConfig` schema simplified.** Dropped: `weight`, `cliCapability`,
+  `capabilities`, `escalateModel`, `escalateOn`, `leaderboardModel`. The `tier`
+  field is now `"subscription" | "metered"` (was a number `1|2|3`).
+- **`RouterConfig` adds `modelPriority: string[]`.** This is the user-declared
+  ordered list of models. Auto-detect picks a sensible default if absent.
+- **`RoutingDecision` simplified.** New shape: `{model, service, tier,
+quotaScore, reason}`. Dropped: `qualityScore`, `cliCapability`,
+  `capabilityScore`, `taskType`, `elo`, `finalScore`.
+- **`RouteHints` simplified.** Kept: `service` (force a service), `model` (bump
+  a model to the front). Dropped: `taskType`, `harness`, `preferLargeContext`.
+- **`LeaderboardCache` removed.** The Arena ELO scoring layer is gone — model
+  preference is the user's call now, not an inferred quality score.
+
+### Algorithm
+
+- **Model-first walk.** For each model in priority order: try every
+  subscription-tier service (highest quota first), then every metered-tier
+  service. When all routes for a model fail, drop to the next model.
+- **Subscription/metered tiers** map directly onto the user's intent: prefer
+  flat-rate paid subscriptions; fall back to per-token API only when needed.
+- **Rate-limit semantics changed.** The previous router stopped dispatch on
+  rate-limit and surfaced the error. The new router excludes the rate-limited
+  service for the rest of this dispatch _and_ trips the breaker, then falls
+  through to the next route. The user gets a response from a different service
+  instead of an error.
+
+### Code reduction
+
+Approximately 1,000 lines removed (LeaderboardCache, scoring math, scoring
+parity tests, six redundant `code_with_<harness>` tools, the `setup` MCP tool).
+The new model-first router is ~400 lines including type definitions, replacing
+a router that was ~800 lines. Total test count dropped from 381 to 332 (the
+deleted tests were the scoring/leaderboard ones; semantics-preserving tests
+were ported to the new router shape).
+
+### Removed
+
+- `setup` as an MCP tool. The Claude-Code-routing-hook bootstrap is a
+  host-install action a human runs once, not something an agent should call
+  mid-conversation. (May come back as a CLI subcommand if there's demand.)
+- The "harness × task_type" capability matrix and the `cli_capability`
+  multipliers per harness. Those numbers were vibes, not measurements.
+
 ## [0.1.0] — 2026-05-01
 
 Initial public release.

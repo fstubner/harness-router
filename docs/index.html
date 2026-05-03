@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Harness Router MCP — same model, different harness, different result</title>
-<meta name="description" content="An MCP server that routes coding tasks to the right CLI. Works with Claude Code, Cursor, Codex, Gemini, OpenCode, GitHub Copilot CLI, and any other CLI you add via YAML. Tracks quota, scores model and CLI together, drops failing services automatically." />
+<title>Harness Router MCP — use your AI subscriptions before metered API</title>
+<meta name="description" content="An MCP server that routes coding tasks model-first across whatever AI CLIs you have installed. Subscription-backed CLIs (Claude Code, Cursor, Codex, Copilot CLI, opencode) are tried first; metered API is the fallback." />
 <meta name="theme-color" content="#0e0f12" />
 
 <meta property="og:title" content="Harness Router MCP" />
-<meta property="og:description" content="Same model, different harness, different result. An MCP server that picks the right CLI for each coding task. Built for Claude Code, Cursor, Codex, Gemini, OpenCode, and GitHub Copilot CLI." />
+<meta property="og:description" content="Use your AI subscriptions before paying for metered API. An MCP server that walks a model priority list and routes through whichever CLI has free quota left." />
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://fstubner.github.io/harness-router-mcp/" />
 <meta name="twitter:card" content="summary_large_image" />
@@ -356,15 +356,14 @@
 
 <section class="hero">
   <h1>
-    Same model.<br />
-    Different harness.<br />
-    <span class="accent">Different result.</span>
+    Use your <span class="accent">subscriptions</span>.<br />
+    Then the API.
   </h1>
   <p class="lede">
-    Most LLM routers just pick a model. This one picks the whole tool. Claude
-    inside Cursor and Claude inside Claude Code use the same weights, but they
-    don’t behave the same way. The CLI around the model matters as much as the
-    model itself, so <strong>Harness Router</strong> picks both.
+    An MCP server that routes coding tasks model-first across your AI
+    subscriptions and APIs. Claude Pro, ChatGPT Plus, Cursor, Copilot CLI,
+    opencode — try the flat-rate ones first. Only fall back to metered API
+    when the subscriptions are dry.
   </p>
   <div class="cta">
     <code class="install"><span class="prompt">$</span>npx -y harness-router-mcp mcp</code>
@@ -377,125 +376,70 @@
 </section>
 
 <section id="why" class="reveal">
-  <span class="eyebrow">The framing</span>
-  <h2>The harness is half the answer.</h2>
+  <span class="eyebrow">The point</span>
+  <h2>Subscriptions you've paid for, used to the limit.</h2>
   <p>
-    A model on its own doesn’t actually do anything to your code. The CLI it
-    runs in does. Cursor has a workspace indexer. Claude Code has Bash and file
-    editing built in. Codex runs in <code>--full-auto</code> mode. Gemini holds
-    two million tokens at once. The same models behave differently depending on
-    which CLI is calling them.
+    You're already paying $20/month for Claude Pro. Maybe another $20 for
+    ChatGPT Plus. Maybe Cursor on top. Each one comes with a flat-rate quota
+    that resets every few hours. When you hit a limit on one of them, the
+    natural next move is to switch to another tool you're paying for — not
+    to swipe a credit card for metered API access at $5–15 per million tokens.
   </p>
   <p>
-    Harness Router treats every model and CLI combination as its own thing,
-    with its own score. Your task goes to whichever combination fits best, not
-    just to whatever has the highest model score on a leaderboard.
+    But you don't actually do that. You hit the limit, wait it out, or
+    silently start paying API rates because you forgot to switch. Harness
+    Router automates the switch. You declare a model preference list. It
+    walks down it, picking the highest-priority model that has a working
+    route — preferring subscription-backed CLIs and only touching metered
+    API as a last resort.
   </p>
-
-  <div class="matrix-wrap">
-    <div class="matrix" role="table" aria-label="Same model, different harness, different score">
-      <div class="cell col-label corner">model × harness</div>
-      <div class="cell col-label">claude_code</div>
-      <div class="cell col-label">cursor</div>
-      <div class="cell col-label">codex</div>
-      <div class="cell col-label">gemini_cli</div>
-
-      <div class="cell row-label">claude-opus-4-6</div>
-      <div class="cell score-best">0.94</div>
-      <div class="cell score-good">0.89</div>
-      <div class="cell score-na">—</div>
-      <div class="cell score-na">—</div>
-
-      <div class="cell row-label">claude-sonnet-4-6</div>
-      <div class="cell score-good">0.86</div>
-      <div class="cell score-best">0.91</div>
-      <div class="cell score-na">—</div>
-      <div class="cell score-na">—</div>
-
-      <div class="cell row-label">gpt-5.4</div>
-      <div class="cell score-na">—</div>
-      <div class="cell score-na">—</div>
-      <div class="cell score-best">0.93</div>
-      <div class="cell score-na">—</div>
-
-      <div class="cell row-label">gemini-3.1-pro</div>
-      <div class="cell score-na">—</div>
-      <div class="cell score-na">—</div>
-      <div class="cell score-na">—</div>
-      <div class="cell score-mid">0.82</div>
-    </div>
-    <p class="matrix-caption">
-      Example numbers, not real measurements. Sonnet does better in Cursor than
-      in Claude Code because Cursor indexes your codebase. Opus is the other
-      way around. Same model, different CLI, different result.
-    </p>
-  </div>
 </section>
 
 <section id="how" class="reveal">
-  <span class="eyebrow">How it picks</span>
-  <h2>How the router decides.</h2>
+  <span class="eyebrow">How it works</span>
+  <h2>One algorithm, four lines.</h2>
   <p>
-    For each request, every available service gets a score. The highest one
-    wins. No coin flips, no round robins.
+    Walk the model priority list. For each model, try every subscription
+    route first. Then try metered. Drop to the next model only when both
+    tiers are exhausted.
   </p>
-  <ol class="scoring">
-    <li>
-      <strong>quality_score</strong>
-      How good the model is at coding. The number comes from a bundled blend
-      of Arena, Aider, and SWE-bench, with the live Arena code leaderboard as
-      a fallback and a safe default if neither is available.
-    </li>
-    <li>
-      <strong>cli_capability</strong>
-      How much the CLI itself adds on top of the model. For reference,
-      <code>claude_code</code> 1.10, <code>codex</code> 1.08,
-      <code>cursor</code> 1.05, <code>gemini_cli</code> 1.00.
-    </li>
-    <li>
-      <strong>capabilities[task_type]</strong>
-      How strong each service is at running code, planning, or reviewing.
-      Cursor wins on execute. Opus wins on plan. Gemini handles long-context
-      reviews well.
-    </li>
-    <li>
-      <strong>quota_score</strong>
-      A 0 to 1 number for how much free quota is left, updated from each
-      response. As a free tier runs out, traffic moves away from it.
-    </li>
-    <li>
-      <strong>circuit_breaker</strong>
-      When a service starts failing, it gets pulled out of rotation. After a
-      cooldown the router probes it once before bringing it back, so you don’t
-      get retry storms.
-    </li>
-  </ol>
+  <pre><code><span class="comment"># config.yaml</span>
+<span class="kw">model_priority</span>:
+  - claude-opus-4.7
+  - gpt-5.4
+  - claude-sonnet-4.6
+  - gemini-3.1-pro
+
+<span class="kw">services</span>:
+  claude_code:    { harness: claude_code,    model: claude-opus-4.7,    tier: subscription }
+  cursor:         { harness: cursor,         model: claude-sonnet-4.6,  tier: subscription }
+  codex:          { harness: codex,          model: gpt-5.4,            tier: subscription }
+  copilot:        { harness: copilot,        model: gpt-5.4,            tier: subscription }
+  gemini_cli:     { harness: gemini_cli,     model: gemini-3.1-pro,     tier: subscription }
+  anthropic_api:  { type: openai_compatible, model: claude-opus-4.7,    tier: metered,
+                    base_url: https://api.anthropic.com/v1, api_key: <span class="str">"${ANTHROPIC_API_KEY}"</span> }</code></pre>
+  <p>
+    With this config, an Opus task tries Claude Code first. If your Claude
+    Pro quota is dry, it falls through to the Anthropic API. Only when
+    Anthropic is also dry does the router drop to GPT-5 and try Codex /
+    Copilot. The model is what you care about; the route is plumbing.
+  </p>
 </section>
 
 <section id="tools" class="reveal">
   <span class="eyebrow">MCP tools</span>
-  <h2>Twelve tools your MCP client picks up automatically.</h2>
+  <h2>Four tools your MCP client picks up automatically.</h2>
   <p>
     Add the server to Claude Desktop, Cursor, or any MCP client. You get
-    twelve tools that handle the routing, leaderboard caching, quota
-    tracking, and circuit breaking for you. Third-party CLIs added via
-    YAML route through <code>code_auto</code> with a <code>harness</code>
-    hint.
+    four tools that handle routing, quota tracking, and circuit breaking
+    for you. Most coding tasks just call <code>code</code>.
   </p>
 
   <div class="tools">
-    <div class="tool"><div class="tool-name">code_auto</div><div class="tool-desc">Pick the best available service for the prompt. Hints: <code>task_type</code>, <code>harness</code>, <code>prefer_large_context</code>, <code>service</code>.</div></div>
-    <div class="tool"><div class="tool-name">code_mixture</div><div class="tool-desc">Fan out to multiple services in parallel. Returns every output for synthesis — use it on architecture decisions.</div></div>
-    <div class="tool"><div class="tool-name">code_with_claude</div><div class="tool-desc">Force any enabled <code>claude_code</code> harness service.</div></div>
-    <div class="tool"><div class="tool-name">code_with_cursor</div><div class="tool-desc">Force any enabled <code>cursor</code> harness service.</div></div>
-    <div class="tool"><div class="tool-name">code_with_codex</div><div class="tool-desc">Force any enabled <code>codex</code> harness service.</div></div>
-    <div class="tool"><div class="tool-name">code_with_gemini</div><div class="tool-desc">Force any enabled <code>gemini_cli</code> harness service.</div></div>
-    <div class="tool"><div class="tool-name">code_with_opencode</div><div class="tool-desc">Force any enabled <code>opencode</code> harness service. Provider-agnostic OSS agent with multi-subscription support.</div></div>
-    <div class="tool"><div class="tool-name">code_with_copilot</div><div class="tool-desc">Force any enabled <code>copilot</code> harness service. The standalone <code>@github/copilot</code> agentic CLI — GitHub-tooling-aware (gh, repo, PR context).</div></div>
-    <div class="tool"><div class="tool-name">get_quota_status</div><div class="tool-desc">JSON summary of quota usage and circuit-breaker state per service.</div></div>
-    <div class="tool"><div class="tool-name">list_available_services</div><div class="tool-desc">Which services are enabled and CLI-reachable on this host.</div></div>
-    <div class="tool"><div class="tool-name">dashboard</div><div class="tool-desc">Formatted overview of services, tiers, ELO, quota, and breaker state.</div></div>
-    <div class="tool"><div class="tool-name">setup</div><div class="tool-desc">Write router routing guidance to <code>~/.claude/CLAUDE.md</code> and install a SessionStart hook so Claude Code reaches for the router by default. Run this once per host.</div></div>
+    <div class="tool"><div class="tool-name">code</div><div class="tool-desc">Walk your model priority list and dispatch to the best available route. Hints: <code>model</code> (bump a model to the front) or <code>service</code> (force a specific dispatcher).</div></div>
+    <div class="tool"><div class="tool-name">code_mixture</div><div class="tool-desc">Fan out to every available service in parallel. One result per service; you synthesise. Useful for architecture decisions where multiple perspectives help.</div></div>
+    <div class="tool"><div class="tool-name">dashboard</div><div class="tool-desc">Multi-line text status — model priority, per-service reachability, quota, breaker state, the router's current pick.</div></div>
+    <div class="tool"><div class="tool-name">get_quota_status</div><div class="tool-desc">JSON version of dashboard, for tooling.</div></div>
   </div>
 </section>
 
@@ -533,7 +477,7 @@ harness-router-mcp --help</code></pre>
   gemini_cli:  { thinking_level: medium }
 
 <span class="kw">disabled</span>: [cursor]    <span class="comment"># skip an installed CLI</span></code></pre>
-  <p>Restart your MCP client. The twelve tools above are live in chat. You can also watch service status from the terminal with <code>harness-router-mcp dashboard --watch</code>.</p>
+  <p>Restart your MCP client. The four tools above are live in chat. You can also watch service status from the terminal with <code>harness-router-mcp dashboard --watch</code>.</p>
 </section>
 
 <footer>

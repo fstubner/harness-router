@@ -1,481 +1,425 @@
 /**
- * Router unit tests.
+ * Algorithm tests for the model-first router.
  *
- * Mocks the CircuitBreaker, QuotaCache, LeaderboardCache, and Dispatcher
- * modules — this test suite focuses on router scoring + dispatch logic,
- * not on those dependencies.
+ * Each test builds a small RouterConfig with hand-rolled fake dispatchers,
+ * threads them through the real Router, and asserts the (model, service,
+ * tier) the router picks (and, where relevant, the order it falls through).
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
-
-// ---- Mock dependency modules with minimal stand-ins ----------------------
-
-vi.mock("../src/circuit-breaker.js", () => {
-  class CircuitBreaker {
-    failures = 0;
-    private _tripped = false;
-    private _cooldown = 300;
-    get isTripped(): boolean {
-      return this._tripped;
-    }
-    recordFailure(): void {
-      this.failures += 1;
-    }
-    recordSuccess(): void {
-      this.failures = 0;
-      this._tripped = false;
-    }
-    trip(retryAfter?: number): void {
-      this._tripped = true;
-      if (retryAfter !== undefined && retryAfter > 0) this._cooldown = retryAfter;
-    }
-    forceTrip(): void {
-      // Test helper — bypass the threshold
-      this._tripped = true;
-    }
-    cooldownRemaining(): number {
-      return this._tripped ? this._cooldown : 0;
-    }
-    status(): { tripped: boolean; failures: number; cooldownRemainingSec?: number } {
-      if (this._tripped) {
-        return { tripped: true, failures: this.failures, cooldownRemainingSec: this._cooldown };
-      }
-      return { tripped: false, failures: this.failures };
-    }
-  }
-  return { CircuitBreaker };
-});
-
-vi.mock("../src/quota.js", () => {
-  class QuotaCache {
-    private readonly scores = new Map<string, number>();
-    // Accept the real constructor's signature so the mocked class matches
-    // the imported type — tests can call `new QuotaCache(dispatchers?, opts?)`
-    // (or no args at all).
-    constructor(_dispatchers?: unknown, _opts?: unknown) {}
-    setScore(service: string, score: number): void {
-      this.scores.set(service, score);
-    }
-    async getQuotaScore(service: string): Promise<number> {
-      return this.scores.get(service) ?? 1.0;
-    }
-    recordResult(): void {
-      /* no-op for tests */
-    }
-  }
-  return { QuotaCache };
-});
-
-vi.mock("../src/leaderboard.js", () => {
-  class LeaderboardCache {
-    private readonly models = new Map<string, { qualityScore: number; elo: number | null }>();
-    private readonly tierOverrides = new Map<string, number>();
-    setModel(model: string, qualityScore: number, elo: number | null = null): void {
-      this.models.set(model, { qualityScore, elo });
-    }
-    setTier(model: string, tier: number): void {
-      this.tierOverrides.set(model, tier);
-    }
-    async getQualityScore(
-      model: string | undefined,
-    ): Promise<{ qualityScore: number; elo: number | null }> {
-      if (!model) return { qualityScore: 1.0, elo: null };
-      return this.models.get(model) ?? { qualityScore: 1.0, elo: null };
-    }
-    async autoTier(
-      model: string | undefined,
-      _thinking: unknown,
-      fallbackTier: number,
-    ): Promise<number> {
-      if (!model) return fallbackTier;
-      return this.tierOverrides.get(model) ?? fallbackTier;
-    }
-  }
-  return { LeaderboardCache };
-});
-
-// ---- Imports come AFTER vi.mock calls ------------------------------------
+import { describe, expect, it } from "vitest";
 
 import { Router } from "../src/router.js";
 import { QuotaCache } from "../src/quota.js";
-import { LeaderboardCache } from "../src/leaderboard.js";
-// CircuitBreaker is mocked above; the import is kept for the type but
-// the value isn't read directly. Same for TaskType — it's used by the
-// mocked module's signatures and the harness contract test.
-import type { DispatchResult, RouterConfig, ServiceConfig } from "../src/types.js";
 import type { Dispatcher } from "../src/dispatchers/base.js";
+import type {
+  DispatchResult,
+  DispatcherEvent,
+  QuotaInfo,
+  RouterConfig,
+  ServiceConfig,
+} from "../src/types.js";
 
-// ---- Test helpers --------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Fakes
+// ---------------------------------------------------------------------------
 
-function makeService(overrides: Partial<ServiceConfig> & { name: string }): ServiceConfig {
-  return {
-    enabled: true,
-    type: "cli",
-    command: overrides.name,
-    tier: 1,
-    weight: 1.0,
-    cliCapability: 1.0,
-    capabilities: { execute: 1.0, plan: 1.0, review: 1.0 },
-    escalateOn: ["plan", "review"],
-    ...overrides,
-  } as ServiceConfig;
+interface FakeDispatcherOpts {
+  succeed?: boolean;
+  rateLimit?: boolean;
+  unavailable?: boolean;
+  log: Array<{ prompt: string; modelOverride: string | undefined }>;
 }
 
-function makeConfig(services: ServiceConfig[]): RouterConfig {
-  const map: Record<string, ServiceConfig> = {};
-  for (const svc of services) map[svc.name] = svc;
-  return { services: map };
-}
-
-class StubDispatcher implements Dispatcher {
+class FakeDispatcher implements Dispatcher {
   readonly id: string;
-  calls: Array<{ prompt: string; model?: string }> = [];
-  private nextResult: DispatchResult;
-  private available = true;
-
-  constructor(id: string, result?: Partial<DispatchResult>) {
+  readonly opts: FakeDispatcherOpts;
+  constructor(id: string, opts: FakeDispatcherOpts) {
     this.id = id;
-    this.nextResult = {
-      output: `ok from ${id}`,
-      service: id,
-      success: true,
-      ...(result ?? {}),
-    } as DispatchResult;
+    this.opts = opts;
   }
-
-  setResult(result: Partial<DispatchResult>): void {
-    this.nextResult = { ...this.nextResult, ...result } as DispatchResult;
+  async dispatch(): Promise<DispatchResult> {
+    throw new Error("Tests use stream() only");
   }
-
-  setAvailable(v: boolean): void {
-    this.available = v;
-  }
-
-  async dispatch(
+  async *stream(
     prompt: string,
     _files: string[],
     _workingDir: string,
     opts?: { modelOverride?: string },
-  ): Promise<DispatchResult> {
-    const call: { prompt: string; model?: string } = { prompt };
-    if (opts?.modelOverride !== undefined) call.model = opts.modelOverride;
-    this.calls.push(call);
-    return this.nextResult;
+  ): AsyncIterable<DispatcherEvent> {
+    this.opts.log.push({ prompt, modelOverride: opts?.modelOverride });
+    if (this.opts.rateLimit) {
+      yield {
+        type: "completion",
+        result: {
+          output: "",
+          service: this.id,
+          success: false,
+          rateLimited: true,
+          error: "rate-limited (fake)",
+        },
+      };
+      return;
+    }
+    yield {
+      type: "completion",
+      result: {
+        output: `from ${this.id} via ${opts?.modelOverride ?? "default"}`,
+        service: this.id,
+        success: this.opts.succeed !== false,
+      },
+    };
   }
-
-  async checkQuota(): Promise<never> {
-    throw new Error("not implemented for tests");
+  async checkQuota(): Promise<QuotaInfo> {
+    return { service: this.id, source: "unknown" };
   }
-
-  // Stream is unused in router.pickService / router.dispatch test paths but
-  // must exist to satisfy the Dispatcher interface. If a future test does
-  // route through the streaming path with this stub, it'll fail loudly here.
-  async *stream(): AsyncIterable<never> {
-    throw new Error("StubDispatcher.stream() is not implemented");
-  }
-
   isAvailable(): boolean {
-    return this.available;
+    return !this.opts.unavailable;
   }
 }
 
-// ---- Tests ---------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Builders
+// ---------------------------------------------------------------------------
 
-describe("Router.pickService", () => {
-  let quota: QuotaCache;
-  let leaderboard: LeaderboardCache;
+interface ServiceSpec {
+  /** Defaults to the service name. */
+  harness?: string;
+  /** Model this service serves (a service serves one model in the new shape). */
+  model: string;
+  tier?: "subscription" | "metered";
+  /** Dispatcher behaviour. */
+  fake?: Omit<FakeDispatcherOpts, "log">;
+}
 
-  beforeEach(() => {
-    quota = new QuotaCache({});
-    leaderboard = new LeaderboardCache();
+interface SetupInput {
+  modelPriority: readonly string[];
+  services: Readonly<Record<string, ServiceSpec>>;
+  /** Per-service quota score 0..1 (default 1.0). */
+  quotas?: Readonly<Record<string, number>>;
+}
+
+function setup(input: SetupInput): {
+  router: Router;
+  logs: Record<string, FakeDispatcherOpts["log"]>;
+} {
+  const dispatchers: Record<string, Dispatcher> = {};
+  const services: Record<string, ServiceConfig> = {};
+  const logs: Record<string, FakeDispatcherOpts["log"]> = {};
+
+  for (const [name, spec] of Object.entries(input.services)) {
+    const log: FakeDispatcherOpts["log"] = [];
+    logs[name] = log;
+    dispatchers[name] = new FakeDispatcher(name, { ...(spec.fake ?? {}), log });
+    services[name] = {
+      name,
+      enabled: true,
+      type: "cli",
+      harness: spec.harness ?? name,
+      command: name,
+      model: spec.model,
+      tier: spec.tier ?? "subscription",
+    };
+  }
+
+  const config: RouterConfig = { services, modelPriority: input.modelPriority };
+
+  const quota = new QuotaCache(dispatchers);
+  const quotas = input.quotas ?? {};
+  quota.getQuotaScore = async (name: string): Promise<number> => quotas[name] ?? 1.0;
+
+  return { router: new Router(config, quota, dispatchers), logs };
+}
+
+async function pick(
+  router: Router,
+  opts?: Parameters<Router["pickService"]>[0],
+): Promise<{ model: string; service: string; tier: string } | null> {
+  const decision = await router.pickService(opts);
+  return decision
+    ? { model: decision.model, service: decision.service, tier: decision.tier }
+    : null;
+}
+
+async function streamAll(
+  router: Router,
+  opts?: Parameters<Router["stream"]>[3],
+): Promise<{
+  events: DispatcherEvent[];
+  decisions: string[]; // serialised "model:tier→service"
+}> {
+  const events: DispatcherEvent[] = [];
+  const decisions: string[] = [];
+  for await (const { event, decision } of router.stream("test prompt", [], "/cwd", opts)) {
+    events.push(event);
+    if (decision) {
+      const tag = `${decision.model}:${decision.tier}→${decision.service}`;
+      if (decisions[decisions.length - 1] !== tag) decisions.push(tag);
+    }
+  }
+  return { events, decisions };
+}
+
+// ---------------------------------------------------------------------------
+// pickService — model priority walk
+// ---------------------------------------------------------------------------
+
+describe("Router.pickService — basics", () => {
+  it("picks the first available subscription CLI for the highest-priority model", async () => {
+    const { router } = setup({
+      modelPriority: ["gpt-5", "claude-opus", "claude-sonnet"],
+      services: {
+        codex: { model: "gpt-5" },
+        copilot: { model: "gpt-5" },
+        claude_code: { model: "claude-opus" },
+        cursor: { model: "claude-sonnet" },
+      },
+    });
+    const result = await pick(router);
+    expect(result?.model).toBe("gpt-5");
+    expect(["codex", "copilot"]).toContain(result?.service);
+    expect(result?.tier).toBe("subscription");
   });
 
-  it("prefers the service with higher ELO within the same tier", async () => {
-    const a = makeService({
-      name: "alpha",
-      leaderboardModel: "model-a",
-      tier: 1,
+  it("falls through to the next model when no CLI for the top model is available", async () => {
+    const { router } = setup({
+      modelPriority: ["gpt-5", "claude-opus"],
+      services: {
+        codex: { model: "gpt-5", fake: { unavailable: true } },
+        claude_code: { model: "claude-opus" },
+      },
     });
-    const b = makeService({
-      name: "beta",
-      leaderboardModel: "model-b",
-      tier: 1,
+    expect(await pick(router)).toEqual({
+      model: "claude-opus",
+      service: "claude_code",
+      tier: "subscription",
     });
-    (leaderboard as unknown as { setModel: (m: string, q: number, e: number) => void }).setModel(
-      "model-a",
-      0.9,
-      1400,
-    );
-    (leaderboard as unknown as { setModel: (m: string, q: number, e: number) => void }).setModel(
-      "model-b",
-      0.8,
-      1300,
-    );
-    const dispatchers: Record<string, Dispatcher> = {
-      alpha: new StubDispatcher("alpha"),
-      beta: new StubDispatcher("beta"),
-    };
-    const router = new Router(makeConfig([a, b]), quota, dispatchers, leaderboard);
-    const decision = await router.pickService({ hints: { taskType: "execute" } });
-    expect(decision).not.toBeNull();
-    expect(decision!.service).toBe("alpha");
-    expect(decision!.tier).toBe(1);
   });
 
-  it("honors a forced service via hints.service", async () => {
-    const a = makeService({ name: "alpha", tier: 1 });
-    const b = makeService({ name: "beta", tier: 2 });
-    const dispatchers: Record<string, Dispatcher> = {
-      alpha: new StubDispatcher("alpha"),
-      beta: new StubDispatcher("beta"),
-    };
-    const router = new Router(makeConfig([a, b]), quota, dispatchers, leaderboard);
-    const decision = await router.pickService({ hints: { service: "beta" } });
-    expect(decision?.service).toBe("beta");
+  it("returns null when every route in every tier of every model is unusable", async () => {
+    const { router } = setup({
+      modelPriority: ["gpt-5", "claude-opus"],
+      services: {
+        codex: { model: "gpt-5", fake: { unavailable: true } },
+        openai_api: { model: "gpt-5", tier: "metered", fake: { unavailable: true } },
+        claude_code: { model: "claude-opus", fake: { unavailable: true } },
+      },
+    });
+    expect(await pick(router)).toBeNull();
+  });
+
+  it("picks the highest-quota CLI among same-model candidates", async () => {
+    const { router } = setup({
+      modelPriority: ["gpt-5"],
+      services: {
+        codex: { model: "gpt-5" },
+        copilot: { model: "gpt-5" },
+      },
+      quotas: { codex: 0.1, copilot: 0.9 },
+    });
+    expect((await pick(router))?.service).toBe("copilot");
+  });
+
+  it("excludes services in opts.exclude", async () => {
+    const { router } = setup({
+      modelPriority: ["gpt-5"],
+      services: { codex: { model: "gpt-5" }, copilot: { model: "gpt-5" } },
+    });
+    const decision = await router.pickService({ exclude: new Set(["codex"]) });
+    expect(decision?.service).toBe("copilot");
+  });
+
+  it("skips CLIs whose breaker is tripped", async () => {
+    const { router } = setup({
+      modelPriority: ["gpt-5"],
+      services: { codex: { model: "gpt-5" }, copilot: { model: "gpt-5" } },
+    });
+    router.getBreaker("codex")!.trip();
+    expect((await pick(router))?.service).toBe("copilot");
+  });
+});
+
+describe("Router.pickService — hints", () => {
+  it("forces a specific service via hints.service", async () => {
+    const { router } = setup({
+      modelPriority: ["gpt-5"],
+      services: { codex: { model: "gpt-5" }, copilot: { model: "gpt-5" } },
+    });
+    const decision = await router.pickService({ hints: { service: "copilot" } });
+    expect(decision?.service).toBe("copilot");
     expect(decision?.reason).toBe("forced");
   });
 
-  it("skips services whose circuit breaker is tripped", async () => {
-    const a = makeService({ name: "alpha", tier: 1 });
-    const b = makeService({ name: "beta", tier: 1 });
-    const dispatchers: Record<string, Dispatcher> = {
-      alpha: new StubDispatcher("alpha"),
-      beta: new StubDispatcher("beta"),
-    };
-    const router = new Router(makeConfig([a, b]), quota, dispatchers, leaderboard);
-    const alphaBreaker = router.getBreaker("alpha");
-    (alphaBreaker as unknown as { forceTrip(): void }).forceTrip();
-    const decision = await router.pickService();
-    expect(decision?.service).toBe("beta");
+  it("returns null when forced service is unavailable", async () => {
+    const { router } = setup({
+      modelPriority: ["gpt-5"],
+      services: { codex: { model: "gpt-5", fake: { unavailable: true } } },
+    });
+    expect(await router.pickService({ hints: { service: "codex" } })).toBeNull();
   });
 
-  it("filters candidates by harness hint", async () => {
-    const a = makeService({
-      name: "alpha",
-      harness: "claude_code",
-      tier: 1,
+  it("bumps the model override to the front of the priority list", async () => {
+    const { router } = setup({
+      modelPriority: ["gpt-5", "claude-opus"],
+      services: {
+        codex: { model: "gpt-5" },
+        claude_code: { model: "claude-opus" },
+      },
     });
-    const b = makeService({
-      name: "beta",
-      harness: "cursor",
-      tier: 1,
-    });
-    const dispatchers: Record<string, Dispatcher> = {
-      alpha: new StubDispatcher("alpha"),
-      beta: new StubDispatcher("beta"),
-    };
-    const router = new Router(makeConfig([a, b]), quota, dispatchers, leaderboard);
-    const decision = await router.pickService({ hints: { harness: "cursor" } });
-    expect(decision?.service).toBe("beta");
+    const decision = await router.pickService({ hints: { model: "claude-opus" } });
+    expect(decision?.model).toBe("claude-opus");
+    expect(decision?.service).toBe("claude_code");
   });
 
-  it("falls through to tier-2 when all tier-1 services are broken", async () => {
-    const a = makeService({ name: "alpha", tier: 1 });
-    const b = makeService({ name: "beta", tier: 2 });
-    const dispatchers: Record<string, Dispatcher> = {
-      alpha: new StubDispatcher("alpha"),
-      beta: new StubDispatcher("beta"),
-    };
-    const router = new Router(makeConfig([a, b]), quota, dispatchers, leaderboard);
-    (router.getBreaker("alpha") as unknown as { forceTrip(): void }).forceTrip();
-    const decision = await router.pickService();
-    expect(decision?.service).toBe("beta");
-    expect(decision?.reason).toMatch(/fallback/);
-    expect(decision?.tier).toBe(2);
-  });
-
-  it("`reason` text uses the FILTERED-harness min tier, not the global min (audit B: WEAK-3)", async () => {
-    // A claude_code-only filter on a config where the only claude_code
-    // service is tier 2 should produce `tier 2 best (...)`, NOT
-    // `tier 2 fallback (all tier 1 services exhausted)`. The "tier 1
-    // services" in question never matched the filter — they belong to a
-    // different harness. The previous code computed minConfiguredTier
-    // across ALL enabled services, ignoring the filter, and emitted the
-    // wrong reason.
-    const claude2 = makeService({ name: "claude_only", harness: "claude_code", tier: 2 });
-    const codex1 = makeService({ name: "codex_only", harness: "codex", tier: 1 });
-    const dispatchers: Record<string, Dispatcher> = {
-      claude_only: new StubDispatcher("claude_only"),
-      codex_only: new StubDispatcher("codex_only"),
-    };
-    const router = new Router(makeConfig([claude2, codex1]), quota, dispatchers, leaderboard);
-    const decision = await router.pickService({ hints: { harness: "claude_code" } });
-    expect(decision?.service).toBe("claude_only");
-    expect(decision?.reason).toMatch(/tier 2 best/);
-    expect(decision?.reason).not.toMatch(/fallback/);
-  });
-
-  it("applies +0.3 prefer_large_context boost to gemini harnesses", async () => {
-    const nongemini = makeService({
-      name: "alpha",
-      harness: "claude_code",
-      tier: 2, // force into tier 2 so comparison is apples-to-apples
+  it("ignores unknown model override and walks the normal priority list", async () => {
+    const { router } = setup({
+      modelPriority: ["gpt-5"],
+      services: { codex: { model: "gpt-5" } },
     });
-    const gemini = makeService({
-      name: "gemini_cli",
-      harness: "gemini_cli",
-      tier: 2,
-    });
-    const dispatchers: Record<string, Dispatcher> = {
-      alpha: new StubDispatcher("alpha"),
-      gemini_cli: new StubDispatcher("gemini_cli"),
-    };
-    const router = new Router(makeConfig([nongemini, gemini]), quota, dispatchers, leaderboard);
-    const withoutBoost = await router.pickService({ hints: { preferLargeContext: false } });
-    const withBoost = await router.pickService({ hints: { preferLargeContext: true } });
-    // Without the boost they tie and alpha wins (iteration order). With the boost gemini wins.
-    expect(withoutBoost?.service).toBe("alpha");
-    expect(withBoost?.service).toBe("gemini_cli");
-    // And the score delta equals 0.3 exactly for the gemini service.
-    expect(withBoost!.finalScore - withoutBoost!.finalScore).toBeCloseTo(0.3, 10);
-  });
-
-  it("applies +0.3 taskType=local boost to localhost openai_compatible services", async () => {
-    const cloud = makeService({
-      name: "cloud",
-      tier: 3,
-      type: "openai_compatible",
-      baseUrl: "https://api.example.com/v1",
-    });
-    const local = makeService({
-      name: "ollama",
-      tier: 3,
-      type: "openai_compatible",
-      baseUrl: "http://localhost:11434/v1",
-    });
-    const dispatchers: Record<string, Dispatcher> = {
-      cloud: new StubDispatcher("cloud"),
-      ollama: new StubDispatcher("ollama"),
-    };
-    const router = new Router(makeConfig([cloud, local]), quota, dispatchers, leaderboard);
-    const decision = await router.pickService({ hints: { taskType: "local" } });
-    expect(decision?.service).toBe("ollama");
-  });
-
-  it("resolves the escalation model when task_type is in escalateOn", async () => {
-    const a = makeService({
-      name: "alpha",
-      model: "default-model",
-      escalateModel: "big-model",
-      escalateOn: ["plan", "review"],
-    });
-    const dispatchers: Record<string, Dispatcher> = { alpha: new StubDispatcher("alpha") };
-    const router = new Router(makeConfig([a]), quota, dispatchers, leaderboard);
-    const executeDec = await router.pickService({ hints: { taskType: "execute" } });
-    const planDec = await router.pickService({ hints: { taskType: "plan" } });
-    expect(executeDec?.model).toBe("default-model");
-    expect(planDec?.model).toBe("big-model");
+    const decision = await router.pickService({ hints: { model: "fictional-model" } });
+    expect(decision?.model).toBe("gpt-5");
   });
 });
 
-describe("Router.route", () => {
-  let quota: QuotaCache;
-  let leaderboard: LeaderboardCache;
+// ---------------------------------------------------------------------------
+// pickService — tier semantics
+// ---------------------------------------------------------------------------
 
-  beforeEach(() => {
-    quota = new QuotaCache({});
-    leaderboard = new LeaderboardCache();
-  });
-
-  it("returns the successful result on first attempt", async () => {
-    const a = makeService({ name: "alpha", tier: 1 });
-    const dispatcher = new StubDispatcher("alpha");
-    const router = new Router(makeConfig([a]), quota, { alpha: dispatcher }, leaderboard);
-    const { result, decision } = await router.route("hi", [], "/tmp");
-    expect(result.success).toBe(true);
-    expect(result.output).toBe("ok from alpha");
-    expect(decision?.service).toBe("alpha");
-    expect(decision?.reason).not.toMatch(/fallback/);
-  });
-
-  it("falls back on transient error (non-rate-limited)", async () => {
-    const a = makeService({ name: "alpha", tier: 1, leaderboardModel: "model-a" });
-    const b = makeService({ name: "beta", tier: 1, leaderboardModel: "model-b" });
-    (leaderboard as unknown as { setModel: (m: string, q: number, e: number) => void }).setModel(
-      "model-a",
-      0.9,
-      1400,
-    );
-    (leaderboard as unknown as { setModel: (m: string, q: number, e: number) => void }).setModel(
-      "model-b",
-      0.85,
-      1350,
-    );
-    const alphaD = new StubDispatcher("alpha");
-    alphaD.setResult({ success: false, error: "boom" });
-    const betaD = new StubDispatcher("beta");
-    const router = new Router(
-      makeConfig([a, b]),
-      quota,
-      { alpha: alphaD, beta: betaD },
-      leaderboard,
-    );
-    const { result, decision } = await router.route("hi", [], "/tmp", {
-      hints: { taskType: "execute" },
+describe("Router.pickService — tier walk", () => {
+  it("picks subscription tier first when both tiers are available", async () => {
+    const { router } = setup({
+      modelPriority: ["claude-opus"],
+      services: {
+        claude_code: { model: "claude-opus", tier: "subscription" },
+        anthropic_api: { model: "claude-opus", tier: "metered" },
+      },
     });
-    expect(result.success).toBe(true);
-    expect(decision?.service).toBe("beta");
-    expect(decision?.reason).toMatch(/fallback #1/);
+    expect((await pick(router))?.tier).toBe("subscription");
   });
 
-  it("does not retry on rate-limited result", async () => {
-    const a = makeService({ name: "alpha", tier: 1 });
-    const b = makeService({ name: "beta", tier: 1 });
-    const alphaD = new StubDispatcher("alpha");
-    alphaD.setResult({
-      success: false,
-      rateLimited: true,
-      error: "429",
-    } as Partial<DispatchResult>);
-    const betaD = new StubDispatcher("beta");
-    const router = new Router(
-      makeConfig([a, b]),
-      quota,
-      { alpha: alphaD, beta: betaD },
-      leaderboard,
-    );
-    const { result } = await router.route("hi", [], "/tmp");
-    expect(result.success).toBe(false);
-    // Beta should never have been called
-    expect(betaD.calls.length).toBe(0);
+  it("falls to metered tier only after every subscription route is unusable", async () => {
+    const { router } = setup({
+      modelPriority: ["claude-opus"],
+      services: {
+        claude_code: { model: "claude-opus", tier: "subscription", fake: { unavailable: true } },
+        cursor: { model: "claude-opus", tier: "subscription", fake: { unavailable: true } },
+        anthropic_api: { model: "claude-opus", tier: "metered" },
+      },
+    });
+    expect(await pick(router)).toEqual({
+      model: "claude-opus",
+      service: "anthropic_api",
+      tier: "metered",
+    });
   });
 
-  it("returns a synthesized failure when no services are available", async () => {
-    const router = new Router(makeConfig([]), quota, {}, leaderboard);
-    const { result, decision } = await router.route("hi", [], "/tmp");
-    expect(result.success).toBe(false);
-    expect(result.service).toBe("none");
-    expect(decision).toBeNull();
+  it("prefers metered route on top model over subscription on next model (model-first)", async () => {
+    const { router } = setup({
+      modelPriority: ["claude-opus", "claude-sonnet"],
+      services: {
+        claude_code: { model: "claude-opus", tier: "subscription", fake: { unavailable: true } },
+        anthropic_api_opus: { model: "claude-opus", tier: "metered" },
+        cursor: { model: "claude-sonnet", tier: "subscription" },
+      },
+    });
+    const result = await pick(router);
+    expect(result?.model).toBe("claude-opus");
+    expect(result?.tier).toBe("metered");
+  });
+
+  it("works with metered-only models (no subscription option)", async () => {
+    const { router } = setup({
+      modelPriority: ["gpt-5"],
+      services: { openai_api: { model: "gpt-5", tier: "metered" } },
+    });
+    expect((await pick(router))?.tier).toBe("metered");
   });
 });
 
-describe("Router.routeTo", () => {
-  let quota: QuotaCache;
-  let leaderboard: LeaderboardCache;
+// ---------------------------------------------------------------------------
+// stream — fallback chain
+// ---------------------------------------------------------------------------
 
-  beforeEach(() => {
-    quota = new QuotaCache({});
-    leaderboard = new LeaderboardCache();
+describe("Router.stream — fallback within a model", () => {
+  it("succeeds on the first pick when the dispatcher succeeds", async () => {
+    const { router, logs } = setup({
+      modelPriority: ["gpt-5"],
+      services: { codex: { model: "gpt-5", fake: { succeed: true } } },
+    });
+    const { decisions } = await streamAll(router);
+    expect(decisions).toEqual(["gpt-5:subscription→codex"]);
+    expect(logs.codex).toHaveLength(1);
   });
 
-  it("returns an error for unknown service", async () => {
-    const router = new Router(makeConfig([]), quota, {}, leaderboard);
-    const { result, decision } = await router.routeTo("nope", "hi", [], "/tmp");
-    expect(result.success).toBe(false);
-    expect(result.error).toMatch(/Unknown service/);
-    expect(decision).toBeNull();
+  it("falls over to the next subscription CLI on rate-limit", async () => {
+    const { router } = setup({
+      modelPriority: ["gpt-5"],
+      services: {
+        codex: { model: "gpt-5", fake: { rateLimit: true } },
+        copilot: { model: "gpt-5", fake: { succeed: true } },
+      },
+    });
+    const { decisions } = await streamAll(router);
+    expect(decisions).toEqual(["gpt-5:subscription→codex", "gpt-5:subscription→copilot"]);
   });
 
-  it("dispatches directly to the requested service with reason 'explicit'", async () => {
-    const a = makeService({ name: "alpha", tier: 1 });
-    const router = new Router(
-      makeConfig([a]),
-      quota,
-      { alpha: new StubDispatcher("alpha") },
-      leaderboard,
-    );
-    const { decision } = await router.routeTo("alpha", "hi", [], "/tmp");
-    expect(decision?.reason).toBe("explicit");
-    expect(decision?.service).toBe("alpha");
+  it("trips the breaker on rate-limit", async () => {
+    const { router } = setup({
+      modelPriority: ["gpt-5"],
+      services: {
+        codex: { model: "gpt-5", fake: { rateLimit: true } },
+        copilot: { model: "gpt-5", fake: { succeed: true } },
+      },
+    });
+    await streamAll(router);
+    expect(router.getBreaker("codex")!.isTripped).toBe(true);
+    expect(router.getBreaker("copilot")!.isTripped).toBe(false);
+  });
+});
+
+describe("Router.stream — tier and model fallback", () => {
+  it("walks subscription → metered → next-model on cascading rate-limits", async () => {
+    const { router } = setup({
+      modelPriority: ["claude-opus", "claude-sonnet"],
+      services: {
+        claude_code: { model: "claude-opus", tier: "subscription", fake: { rateLimit: true } },
+        anthropic_api_opus: { model: "claude-opus", tier: "metered", fake: { rateLimit: true } },
+        cursor: { model: "claude-sonnet", tier: "subscription", fake: { succeed: true } },
+      },
+      // Allow plenty of attempts so we walk all 3 routes.
+    });
+    const { decisions } = await streamAll(router, { maxFallbacks: 5 });
+    expect(decisions).toEqual([
+      "claude-opus:subscription→claude_code",
+      "claude-opus:metered→anthropic_api_opus",
+      "claude-sonnet:subscription→cursor",
+    ]);
+  });
+
+  it("yields a completion with success=false when every tier of every model is exhausted", async () => {
+    const { router } = setup({
+      modelPriority: ["gpt-5"],
+      services: {
+        codex: { model: "gpt-5", tier: "subscription", fake: { rateLimit: true } },
+        openai_api: { model: "gpt-5", tier: "metered", fake: { rateLimit: true } },
+      },
+    });
+    const { events } = await streamAll(router, { maxFallbacks: 5 });
+    // The terminal completion has success=false. Because rate-limited
+    // dispatches still emit completion events, the last event is a real
+    // dispatcher completion, not a synthesised "no available routes" one.
+    const terminal = [...events].reverse().find((e) => e.type === "completion");
+    expect(terminal).toBeDefined();
+    if (terminal && terminal.type === "completion") {
+      expect(terminal.result.success).toBe(false);
+    }
+  });
+
+  it("threads the picked model into the dispatcher as modelOverride", async () => {
+    const { router, logs } = setup({
+      modelPriority: ["gpt-5"],
+      services: { codex: { model: "gpt-5", fake: { succeed: true } } },
+    });
+    await streamAll(router);
+    expect(logs.codex![0]!.modelOverride).toBe("gpt-5");
   });
 });

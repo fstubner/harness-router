@@ -8,7 +8,6 @@ export { Router } from "./router.js";
 export type { RouterStreamEvent } from "./router.js";
 export { CircuitBreaker } from "./circuit-breaker.js";
 export { QuotaCache, QuotaState } from "./quota.js";
-export { LeaderboardCache } from "./leaderboard.js";
 export { loadConfig, watchConfig } from "./config.js";
 export * from "./types.js";
 export type { Dispatcher, DispatchOpts } from "./dispatchers/base.js";

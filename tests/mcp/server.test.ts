@@ -2,8 +2,7 @@
  * MCP server smoke tests.
  *
  * Uses the SDK's `InMemoryTransport.createLinkedPair()` so the client and
- * server can exchange JSON-RPC frames entirely in-process, with no real
- * stdio or HTTP.
+ * server can exchange JSON-RPC frames entirely in-process.
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -16,9 +15,14 @@ import { registerTools, TOOL_NAMES } from "../../src/mcp/tools.js";
 import { RuntimeHolder, type RuntimeState } from "../../src/mcp/config-hot-reload.js";
 import { Router } from "../../src/router.js";
 import { QuotaCache } from "../../src/quota.js";
-import { LeaderboardCache } from "../../src/leaderboard.js";
 import type { Dispatcher } from "../../src/dispatchers/base.js";
-import type { DispatchResult, QuotaInfo, RouterConfig, ServiceConfig } from "../../src/types.js";
+import type {
+  DispatchResult,
+  DispatcherEvent,
+  QuotaInfo,
+  RouterConfig,
+  ServiceConfig,
+} from "../../src/types.js";
 
 class StubDispatcher implements Dispatcher {
   readonly id: string;
@@ -34,55 +38,47 @@ class StubDispatcher implements Dispatcher {
   async checkQuota(): Promise<QuotaInfo> {
     return { service: this.id, source: "unknown" };
   }
-  async *stream(): AsyncIterable<never> {
-    throw new Error("StubDispatcher.stream() is not implemented");
+  async *stream(): AsyncIterable<DispatcherEvent> {
+    yield {
+      type: "completion",
+      result: { output: this.reply, service: this.id, success: true },
+    };
   }
   isAvailable(): boolean {
     return true;
   }
 }
 
-function makeSvc(name: string, harness: string): ServiceConfig {
+function makeSvc(name: string, harness: string, model: string): ServiceConfig {
   return {
     name,
     enabled: true,
     type: "cli",
     harness,
     command: name,
-    tier: 1,
-    weight: 1.0,
-    cliCapability: 1.0,
-    capabilities: { execute: 1.0, plan: 1.0, review: 1.0 },
-    escalateOn: [],
-    leaderboardModel: `${name}-model`,
+    model,
+    tier: "subscription",
     maxOutputTokens: 64_000,
     maxInputTokens: 1_000_000,
   };
 }
 
-function stubLeaderboard(): LeaderboardCache {
-  const lb = new LeaderboardCache();
-
-  (lb as any).fetchedAt = Date.now();
-
-  (lb as any).data = { "a-model": 1400, "b-model": 1300 };
-  return lb;
-}
-
 function buildState(): RuntimeState {
   const services = {
-    a: makeSvc("a", "claude_code"),
-    b: makeSvc("b", "codex"),
+    a: makeSvc("a", "claude_code", "claude-opus-4.7"),
+    b: makeSvc("b", "codex", "gpt-5.4"),
   };
   const dispatchers: Record<string, Dispatcher> = {
     a: new StubDispatcher("a", "answer-from-a"),
     b: new StubDispatcher("b", "answer-from-b"),
   };
-  const config: RouterConfig = { services };
+  const config: RouterConfig = {
+    services,
+    modelPriority: ["claude-opus-4.7", "gpt-5.4"],
+  };
   const quota = new QuotaCache(dispatchers);
-  const leaderboard = stubLeaderboard();
-  const router = new Router(config, quota, dispatchers, leaderboard);
-  return { config, dispatchers, quota, router, leaderboard, mtimeMs: 0 };
+  const router = new Router(config, quota, dispatchers);
+  return { config, dispatchers, quota, router, mtimeMs: 0 };
 }
 
 // Suppress QuotaCache writes to disk.
@@ -117,13 +113,12 @@ async function startLinked(): Promise<{
 }
 
 describe("MCP server — registration", () => {
-  it("registers all 12 tools via McpServer.registerTool", async () => {
+  it("registers all four tools via McpServer.registerTool", async () => {
     const { client, close } = await startLinked();
     try {
       const resp = await client.listTools();
       const names = resp.tools.map((t) => t.name).sort();
       expect(names).toEqual([...TOOL_NAMES].sort());
-      // All tools must carry an input schema.
       for (const t of resp.tools) {
         expect(t.inputSchema).toBeDefined();
         expect(t.inputSchema.type).toBe("object");
@@ -133,12 +128,12 @@ describe("MCP server — registration", () => {
     }
   });
 
-  it("code_auto round-trips through the in-memory transport", async () => {
+  it("code round-trips through the in-memory transport", async () => {
     const { client, close } = await startLinked();
     try {
       const resp = await client.callTool({
-        name: "code_auto",
-        arguments: { prompt: "say hi", hints: { taskType: "plan" } },
+        name: "code",
+        arguments: { prompt: "say hi" },
       });
       expect(resp.isError).not.toBe(true);
       const content = resp.content as Array<{ type: string; text: string }>;
@@ -148,34 +143,14 @@ describe("MCP server — registration", () => {
         success: boolean;
         service: string;
         output: string;
-        routing?: { tier: number };
+        routing?: { model: string; tier: string };
       };
       expect(parsed.success).toBe(true);
-      // Our two stub services both sit in tier 1 — the higher-ELO
-      // leaderboard model wins.
-      expect(["a", "b"]).toContain(parsed.service);
+      // First model in priority is claude-opus-4.7 → service "a".
+      expect(parsed.service).toBe("a");
       expect(parsed.output.length).toBeGreaterThan(0);
       expect(parsed.routing).toBeDefined();
-    } finally {
-      await close();
-    }
-  });
-
-  it("list_available_services returns services in the JSON block", async () => {
-    const { client, close } = await startLinked();
-    try {
-      const resp = await client.callTool({
-        name: "list_available_services",
-        arguments: {},
-      });
-      const content = resp.content as Array<{ type: string; text: string }>;
-      const parsed = JSON.parse(content[0]!.text) as {
-        services: Array<{ name: string; maxOutputTokens?: number }>;
-      };
-      expect(parsed.services.map((s) => s.name).sort()).toEqual(["a", "b"]);
-      for (const s of parsed.services) {
-        expect(s.maxOutputTokens).toBeDefined();
-      }
+      expect(parsed.routing?.tier).toBe("subscription");
     } finally {
       await close();
     }
@@ -191,6 +166,21 @@ describe("MCP server — registration", () => {
       const content = resp.content as Array<{ type: string; text: string }>;
       expect(content[0]!.type).toBe("text");
       expect(content[0]!.text).toContain("harness-router-mcp");
+    } finally {
+      await close();
+    }
+  });
+
+  it("get_quota_status returns JSON with breaker state", async () => {
+    const { client, close } = await startLinked();
+    try {
+      const resp = await client.callTool({
+        name: "get_quota_status",
+        arguments: {},
+      });
+      const content = resp.content as Array<{ type: string; text: string }>;
+      const parsed = JSON.parse(content[0]!.text) as Record<string, unknown>;
+      expect(Object.keys(parsed).sort()).toEqual(["a", "b"]);
     } finally {
       await close();
     }

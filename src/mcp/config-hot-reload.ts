@@ -16,7 +16,6 @@
 import { promises as fs } from "node:fs";
 
 import { loadConfig } from "../config.js";
-import { LeaderboardCache } from "../leaderboard.js";
 import { QuotaCache } from "../quota.js";
 import { Router } from "../router.js";
 import type { RouterConfig } from "../types.js";
@@ -27,7 +26,6 @@ export interface RuntimeState {
   dispatchers: DispatcherMap;
   quota: QuotaCache;
   router: Router;
-  leaderboard: LeaderboardCache;
   mtimeMs: number;
 }
 
@@ -56,17 +54,13 @@ async function statMtime(path: string | undefined): Promise<number> {
  * Bootstrap the full runtime from a config path. Used on server start and
  * again (internally) when a reload is triggered.
  */
-export async function bootstrapRuntime(opts: {
-  configPath?: string;
-  leaderboard?: LeaderboardCache;
-}): Promise<RuntimeState> {
+export async function bootstrapRuntime(opts: { configPath?: string }): Promise<RuntimeState> {
   const config = await loadConfig(opts.configPath);
   const dispatchers = await buildDispatchers(config);
   const quota = new QuotaCache(dispatchers);
-  const leaderboard = opts.leaderboard ?? new LeaderboardCache();
-  const router = new Router(config, quota, dispatchers, leaderboard);
+  const router = new Router(config, quota, dispatchers);
   const mtimeMs = await statMtime(opts.configPath);
-  return { config, dispatchers, quota, router, leaderboard, mtimeMs };
+  return { config, dispatchers, quota, router, mtimeMs };
 }
 
 /** Gate that serialises concurrent reload attempts. */
@@ -143,9 +137,7 @@ export class ConfigHotReloader {
 
       let next: RuntimeState;
       try {
-        const bootOpts: { configPath?: string; leaderboard?: LeaderboardCache } = {
-          leaderboard: this.holder.state.leaderboard,
-        };
+        const bootOpts: { configPath?: string } = {};
         if (this.configPath !== undefined) bootOpts.configPath = this.configPath;
         next = await bootstrapRuntime(bootOpts);
       } catch {

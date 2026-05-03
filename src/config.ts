@@ -3,8 +3,8 @@
  *
  * Two entry points:
  *   loadConfig(path?)   — if no path, auto-detects installed CLIs on PATH.
- *                         If path points to a legacy YAML with a `services:`
- *                         key, returns it verbatim. Otherwise merges minimal
+ *                         If path points to a YAML with a `services:` key,
+ *                         returns it verbatim. Otherwise merges minimal
  *                         overrides onto auto-detected defaults.
  *   watchConfig(path)   — poll the file's mtime once a second and reload on
  *                         change. Returns {stop} to cancel the poller.
@@ -19,119 +19,90 @@ import which from "which";
 
 import type {
   GenericCliRecipe,
+  RouteTier,
   RouterConfig,
   ServiceConfig,
-  TaskType,
   ThinkingLevel,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Built-in defaults for auto-detected CLIs.
-// Mirrors Python config.py _CLI_DEFAULTS exactly.
+// Each CLI gets a sensible default model. Users override via `overrides:`
+// or the legacy `services:` block.
 // ---------------------------------------------------------------------------
 
 interface CliDefaults {
   command: string;
   harness: string;
-  leaderboardModel: string;
-  cliCapability: number;
-  tier: number;
-  thinkingLevel?: "low" | "medium" | "high";
-  capabilities: { execute: number; plan: number; review: number };
+  /** Canonical model ID this CLI serves by default. */
+  model: string;
+  thinkingLevel?: ThinkingLevel;
   maxOutputTokens?: number;
   maxInputTokens?: number;
 }
 
-// Token limits as of April 2026. Treat as conservative upper bounds —
-// providers occasionally raise them, rarely lower them.
+// Token limits as of April 2026. Conservative upper bounds.
 const CLI_DEFAULTS: Record<string, CliDefaults> = {
   claude_code: {
     command: "claude",
     harness: "claude_code",
-    leaderboardModel: "claude-opus-4-6",
-    cliCapability: 1.1,
-    tier: 1,
-    capabilities: { execute: 0.95, plan: 1.0, review: 1.0 },
+    model: "claude-sonnet-4.6",
     maxOutputTokens: 64_000,
-    maxInputTokens: 1_000_000, // Opus + Sonnet 1M context
+    maxInputTokens: 1_000_000,
   },
   codex: {
     command: "codex",
     harness: "codex",
-    leaderboardModel: "gpt-5.4",
-    cliCapability: 1.08,
-    tier: 1,
-    capabilities: { execute: 1.0, plan: 0.83, review: 0.82 },
+    model: "gpt-5.4",
     maxOutputTokens: 128_000,
     maxInputTokens: 400_000,
   },
   cursor: {
     command: "agent",
     harness: "cursor",
-    leaderboardModel: "claude-sonnet-4-6",
-    cliCapability: 1.05,
-    tier: 1,
-    capabilities: { execute: 1.0, plan: 0.82, review: 0.9 },
+    model: "claude-sonnet-4.6",
     maxOutputTokens: 64_000,
     maxInputTokens: 1_000_000,
   },
   gemini_cli: {
     command: "gemini",
     harness: "gemini_cli",
-    leaderboardModel: "gemini-3.1-pro-preview",
-    cliCapability: 1.0,
-    tier: 1,
+    model: "gemini-3.1-pro",
     thinkingLevel: "high",
-    capabilities: { execute: 0.87, plan: 0.97, review: 0.95 },
     maxOutputTokens: 65_536,
-    maxInputTokens: 2_000_000, // Gemini 3.1 Pro 2M context
+    maxInputTokens: 2_000_000,
   },
   opencode: {
     command: "opencode",
     harness: "opencode",
-    // OpenCode is provider-agnostic — leaderboard model is whatever the user
-    // configured in opencode.json. Default to a reasonable Claude entry so the
-    // ELO lookup gives a sensible baseline; users can override via config.yaml.
-    leaderboardModel: "claude-sonnet-4-6",
-    cliCapability: 1.05, // open-source harness with active dev; calibrate as we learn
-    tier: 1,
-    capabilities: { execute: 0.92, plan: 0.95, review: 0.93 },
+    model: "claude-sonnet-4.6",
     maxOutputTokens: 64_000,
     maxInputTokens: 1_000_000,
   },
   copilot: {
-    // GitHub's standalone agentic CLI (`@github/copilot` npm package).
-    // Distinct from VS Code's Copilot extension (which has no headless
-    // CLI and isn't routable). Underlying model varies by user policy /
-    // org (GPT-4o / GPT-5 / Claude depending on Copilot Business config).
     command: "copilot",
     harness: "copilot",
-    // Copilot's selectable model is opaque to the router (set via Copilot
-    // settings, not per-call). We pin the leaderboard entry to a strong
-    // baseline; recalibrate once empirical numbers are in.
-    leaderboardModel: "gpt-5.4",
-    cliCapability: 1.03, // GitHub-tooling-aware; calibrate as we learn
-    tier: 1,
-    capabilities: { execute: 0.9, plan: 0.85, review: 0.88 },
+    model: "gpt-5.4",
     maxOutputTokens: 64_000,
     maxInputTokens: 200_000,
   },
 };
 
+/**
+ * Default model priority for auto-detected configs. Walked in this order
+ * when no explicit `model_priority` is declared. Built from the union of
+ * CLI_DEFAULTS' models — order is "good general-purpose default" picks.
+ */
+const DEFAULT_MODEL_PRIORITY: readonly string[] = [
+  "claude-opus-4.7",
+  "gpt-5.4",
+  "claude-sonnet-4.6",
+  "gemini-3.1-pro",
+];
+
 // ---------------------------------------------------------------------------
 // Env var interpolation (${VAR_NAME})
-//
-// NOTE: this regex is anchored to `^...$`, so a string is only interpolated
-// when it consists ENTIRELY of one `${VAR}` reference.
-//
-//   gemini_api_key: ${GEMINI_API_KEY}             ← interpolated
-//   url: "https://api.example.com?key=${KEY}"     ← NOT interpolated (literal preserved)
-//
-// This intentionally matches the Python reference's behaviour. Mid-string
-// interpolation has not been requested; if you need it, change the regex
-// to `\$\{([A-Za-z_][A-Za-z0-9_]*)\}` (no anchors) and use String.replace
-// to swap each match — but be aware existing configs that contain literal
-// `${...}` values would change meaning.
+// Only interpolates when a string consists ENTIRELY of one `${VAR}` reference.
 // ---------------------------------------------------------------------------
 
 const ENV_VAR_RE = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
@@ -142,28 +113,9 @@ function interpolateEnv(value: string): string {
   return process.env[m[1]!] ?? "";
 }
 
-/**
- * Walk an arbitrary parsed-YAML tree and replace any "${VAR}" string leaves
- * with their corresponding environment-variable values.
- *
- * The input is `unknown` because YAML trees can hold any leaf type (string,
- * number, boolean, null, array, object) — `js-yaml` doesn't constrain
- * shape. We preserve the input's runtime structure precisely; only string
- * leaves get rewritten. The previous implementation used a generic
- * `<T>` parameter and `as unknown as T` to make TS pass, but the generic
- * was a fiction — the caller could pass any tree, and the return wasn't
- * actually shape-preserving at the type level.
- *
- * This shape (input/output `unknown`) is honest about what the function
- * does. Callers narrow the result via the parser-builder helpers below.
- */
 function interpolateTree(node: unknown): unknown {
-  if (typeof node === "string") {
-    return interpolateEnv(node);
-  }
-  if (Array.isArray(node)) {
-    return node.map(interpolateTree);
-  }
+  if (typeof node === "string") return interpolateEnv(node);
+  if (Array.isArray(node)) return node.map(interpolateTree);
   if (node !== null && typeof node === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
@@ -178,7 +130,6 @@ function interpolateTree(node: unknown): unknown {
 // `which` — pluggable for tests
 // ---------------------------------------------------------------------------
 
-/** Injection seam for tests. Set via loadConfig({ whichFn }) if needed. */
 export type WhichFn = (cmd: string) => Promise<string | null>;
 
 const defaultWhich: WhichFn = async (cmd: string): Promise<string | null> => {
@@ -227,41 +178,29 @@ function thinkingFrom(v: unknown): ThinkingLevel | undefined {
   return undefined;
 }
 
-function capsFrom(raw: unknown): { execute: number; plan: number; review: number } {
-  const r = (raw ?? {}) as Record<string, unknown>;
-  return {
-    execute: num(r.execute, 1.0),
-    plan: num(r.plan, 1.0),
-    review: num(r.review, 1.0),
-  };
+function tierFrom(v: unknown): RouteTier {
+  return v === "metered" ? "metered" : "subscription";
 }
 
-function escalateOnFrom(raw: unknown): TaskType[] {
-  if (!Array.isArray(raw)) return ["plan", "review"];
-  const out: TaskType[] = [];
+function modelPriorityFrom(raw: unknown): readonly string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: string[] = [];
   for (const v of raw) {
-    if (v === "execute" || v === "plan" || v === "review" || v === "local") {
-      out.push(v);
-    }
+    if (typeof v === "string" && v !== "") out.push(v);
   }
-  return out.length > 0 ? out : ["plan", "review"];
+  return out.length > 0 ? out : undefined;
 }
 
 /**
  * Parse a `generic_cli` service's recipe block from raw YAML.
- *
- * Accepts both snake_case (idiomatic for YAML) and the camelCase TS field
- * names — same convention as the surrounding parser. All fields are
- * optional; missing fields use the dispatcher's defaults.
+ * Accepts both snake_case and camelCase field names. All fields optional.
  */
 function parseGenericCliRecipe(svc: Record<string, unknown>): GenericCliRecipe {
   const recipe: GenericCliRecipe = {};
   const stringList = (raw: unknown): string[] | undefined => {
     if (!Array.isArray(raw)) return undefined;
     const out: string[] = [];
-    for (const v of raw) {
-      if (typeof v === "string") out.push(v);
-    }
+    for (const v of raw) if (typeof v === "string") out.push(v);
     return out.length > 0 ? out : undefined;
   };
   const argsBefore = stringList(svc.args_before_prompt ?? svc.argsBeforePrompt);
@@ -288,15 +227,11 @@ function parseGenericCliRecipe(svc: Record<string, unknown>): GenericCliRecipe {
   if (authCommand) recipe.authCommand = authCommand;
   const argsPerFile = stringList(svc.args_per_file ?? svc.argsPerFile);
   if (argsPerFile) recipe.argsPerFile = argsPerFile;
-  // outputJsonl is a nested block. Both snake_case and camelCase fields
-  // accepted. textDeltaPath is required; the rest are optional.
   const rawJsonl = (svc.output_jsonl ?? svc.outputJsonl) as Record<string, unknown> | undefined;
   if (rawJsonl && typeof rawJsonl === "object") {
     const textDeltaPath = str(rawJsonl.text_delta_path ?? rawJsonl.textDeltaPath);
     if (textDeltaPath) {
-      const jsonl: NonNullable<GenericCliRecipe["outputJsonl"]> = {
-        textDeltaPath,
-      };
+      const jsonl: NonNullable<GenericCliRecipe["outputJsonl"]> = { textDeltaPath };
       const toolNamePath = str(rawJsonl.tool_name_path ?? rawJsonl.toolNamePath);
       if (toolNamePath) jsonl.toolNamePath = toolNamePath;
       const toolInputPath = str(rawJsonl.tool_input_path ?? rawJsonl.toolInputPath);
@@ -321,15 +256,6 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
 
   for (const [name, svc] of Object.entries(rawServices)) {
     const rawType = str(svc.type) ?? "cli";
-    // Validate type against the union. Unknown types fall back to "cli"
-    // so an old config with a typo doesn't silently disappear from
-    // routing entirely — the dispatcher factory will either find a
-    // harness match for `name` or skip the service.
-    //
-    // Audit pass A flagged this as a UX smell: `type: generic-cli`
-    // (hyphen) silently degrades to "cli". We surface a stderr warning
-    // so the operator sees the typo on first run. Stderr — not stdout —
-    // because stdout is reserved for MCP JSON-RPC.
     const isKnownType =
       rawType === "cli" || rawType === "openai_compatible" || rawType === "generic_cli";
     if (!isKnownType) {
@@ -348,21 +274,11 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
       ...(str(svc.api_key) !== undefined ? { apiKey: str(svc.api_key)! } : {}),
       ...(str(svc.base_url) !== undefined ? { baseUrl: str(svc.base_url)! } : {}),
       ...(str(svc.model) !== undefined ? { model: str(svc.model)! } : {}),
-      tier: int(svc.tier, 1),
-      weight: num(svc.weight, 1.0),
-      cliCapability: num(svc.cli_capability, 1.0),
-      ...(str(svc.leaderboard_model) !== undefined
-        ? { leaderboardModel: str(svc.leaderboard_model)! }
-        : {}),
+      tier: tierFrom(svc.tier),
       ...(() => {
         const t = thinkingFrom(svc.thinking_level);
         return t !== undefined ? { thinkingLevel: t } : {};
       })(),
-      ...(str(svc.escalate_model) !== undefined ? { escalateModel: str(svc.escalate_model)! } : {}),
-      escalateOn: escalateOnFrom(svc.escalate_on),
-      capabilities: capsFrom(svc.capabilities),
-      // Use num()/int() so YAML strings ("64000") are accepted alongside numbers,
-      // matching the rest of the parser.
       ...(svc.max_output_tokens !== undefined
         ? { maxOutputTokens: int(svc.max_output_tokens, 0) }
         : {}),
@@ -374,11 +290,12 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
     services[name] = svcConfig;
   }
 
-  const cfg: RouterConfig = {
-    services,
-    ...(Array.isArray(raw.disabled) ? { disabled: (raw.disabled as string[]).slice() } : {}),
-    ...(str(raw.gemini_api_key) !== undefined ? { geminiApiKey: str(raw.gemini_api_key)! } : {}),
-  };
+  const cfg: RouterConfig = { services };
+  const priority = modelPriorityFrom(raw.model_priority);
+  if (priority) cfg.modelPriority = priority;
+  if (Array.isArray(raw.disabled)) cfg.disabled = (raw.disabled as string[]).slice();
+  const geminiKey = str(raw.gemini_api_key);
+  if (geminiKey) cfg.geminiApiKey = geminiKey;
   return cfg;
 }
 
@@ -403,17 +320,7 @@ async function detectServices(
     const found = await whichFn(defaults.command);
     if (!found) continue;
 
-    const override = { ...(overrides[name] ?? {}) };
-    // Capabilities merge-over-defaults.
-    const caps = { ...defaults.capabilities };
-    if (override.capabilities && typeof override.capabilities === "object") {
-      const oc = override.capabilities as Record<string, unknown>;
-      if (oc.execute !== undefined) caps.execute = num(oc.execute, caps.execute);
-      if (oc.plan !== undefined) caps.plan = num(oc.plan, caps.plan);
-      if (oc.review !== undefined) caps.review = num(oc.review, caps.review);
-      delete override.capabilities;
-    }
-
+    const override = overrides[name] ?? {};
     const svc: ServiceConfig = {
       name,
       enabled: true,
@@ -421,28 +328,15 @@ async function detectServices(
       harness: str(override.harness) ?? defaults.harness,
       command: str(override.command) ?? defaults.command,
       ...(apiKeys[name] ? { apiKey: apiKeys[name] } : {}),
-      ...(str(override.model) !== undefined ? { model: str(override.model)! } : {}),
-      ...(str(override.base_url) !== undefined ? { baseUrl: str(override.base_url)! } : {}),
-      weight: num(override.weight, 1.0),
-      tier: int(override.tier, defaults.tier),
-      cliCapability: num(override.cli_capability, defaults.cliCapability),
-      leaderboardModel: str(override.leaderboard_model) ?? defaults.leaderboardModel,
+      model: str(override.model) ?? defaults.model,
+      tier: tierFrom(override.tier ?? "subscription"),
       ...(() => {
         const overrideThinking = thinkingFrom(override.thinking_level);
         if (overrideThinking !== undefined) return { thinkingLevel: overrideThinking };
-        if (defaults.thinkingLevel !== undefined) {
-          return { thinkingLevel: defaults.thinkingLevel };
-        }
+        if (defaults.thinkingLevel !== undefined) return { thinkingLevel: defaults.thinkingLevel };
         return {};
       })(),
-      ...(str(override.escalate_model) !== undefined
-        ? { escalateModel: str(override.escalate_model)! }
-        : {}),
-      escalateOn: escalateOnFrom(override.escalate_on),
-      capabilities: caps,
       ...(() => {
-        // Accept both numbers and YAML strings; fall back to the default if
-        // the override is absent or unparseable.
         const m = override.max_output_tokens;
         if (m !== undefined) {
           const parsed = int(m, NaN);
@@ -470,31 +364,30 @@ async function detectServices(
 
 function collectApiKeys(raw: Record<string, unknown>): ApiKeys {
   const apiKeys: ApiKeys = {};
-
   const rawApiKeys = (raw.api_keys ?? {}) as Record<string, unknown>;
   for (const [k, v] of Object.entries(rawApiKeys)) {
     if (typeof v === "string" && v !== "") apiKeys[k] = v;
   }
-
-  // Shorthand: gemini_api_key, codex_api_key, etc.
   for (const name of Object.keys(CLI_DEFAULTS)) {
     const shorthand = `${name}_api_key`;
     const v = raw[shorthand];
     if (typeof v === "string" && v !== "") apiKeys[name] = v;
   }
-  // Top-level gemini_api_key is the common case -> gemini_cli.
   if (typeof raw.gemini_api_key === "string" && raw.gemini_api_key !== "") {
     apiKeys.gemini_cli = raw.gemini_api_key;
   }
-  // Fall back to env directly for Gemini.
   if (!apiKeys.gemini_cli) {
     const fromEnv = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
     if (fromEnv) apiKeys.gemini_cli = fromEnv;
   }
-
   return apiKeys;
 }
 
+/**
+ * Add metered API endpoints from the YAML `endpoints:` block. Endpoints
+ * default to `tier: metered` since they're per-token-billed APIs (override
+ * via `tier: subscription` if you have a flat-rate API arrangement).
+ */
 function addEndpoints(services: Record<string, ServiceConfig>, raw: Record<string, unknown>): void {
   const endpoints = Array.isArray(raw.endpoints)
     ? (raw.endpoints as Record<string, unknown>[])
@@ -513,14 +406,7 @@ function addEndpoints(services: Record<string, ServiceConfig>, raw: Record<strin
       model,
       command: "",
       ...(str(ep.api_key) !== undefined ? { apiKey: str(ep.api_key)! } : {}),
-      weight: num(ep.weight, 0.6),
-      tier: int(ep.tier, 3),
-      cliCapability: num(ep.cli_capability, 1.0),
-      ...(str(ep.leaderboard_model) !== undefined
-        ? { leaderboardModel: str(ep.leaderboard_model)! }
-        : {}),
-      escalateOn: escalateOnFrom(ep.escalate_on),
-      capabilities: capsFrom(ep.capabilities),
+      tier: tierFrom(ep.tier ?? "metered"),
     };
     services[name] = svc;
   }
@@ -531,18 +417,16 @@ function addEndpoints(services: Record<string, ServiceConfig>, raw: Record<strin
 // ---------------------------------------------------------------------------
 
 export interface LoadConfigOptions {
-  /** Override `which` for tests — return null when a CLI is "not found". */
   whichFn?: WhichFn;
 }
 
 /**
  * Load a RouterConfig.
  *
- * If `path` is omitted (or the file doesn't exist), auto-detect CLIs on PATH
- * and use built-in defaults. If the file has a top-level `services:` key,
- * parse it in legacy mode. Otherwise auto-detect and merge `overrides`.
- *
- * Supports ${ENV_VAR} interpolation for any string value.
+ * If `path` is omitted (or the file doesn't exist), auto-detect CLIs on
+ * PATH. If the file has a `services:` key, parse it in legacy mode.
+ * Otherwise auto-detect and merge `overrides`. `${ENV_VAR}` interpolation
+ * is supported throughout.
  */
 export async function loadConfig(
   path?: string,
@@ -556,19 +440,15 @@ export async function loadConfig(
       const text = await fs.readFile(path, "utf-8");
       const parsed = yaml.load(text);
       if (parsed && typeof parsed === "object") {
-        // interpolateTree returns `unknown`; we just verified `parsed` is
-        // an object, and the function preserves runtime shape, so the
-        // narrowing is safe here.
         raw = interpolateTree(parsed) as Record<string, unknown>;
       }
     } catch (err: unknown) {
-      // File not found -> auto-detect mode. Any other error -> rethrow.
       const e = err as NodeJS.ErrnoException;
       if (e.code !== "ENOENT") throw err;
     }
   }
 
-  // Legacy full format: has a `services:` key -> use as-is.
+  // Legacy full format: explicit `services:` block.
   if (raw.services && typeof raw.services === "object") {
     return buildLegacyConfig(raw);
   }
@@ -580,11 +460,13 @@ export async function loadConfig(
   const services = await detectServices(disabled, apiKeys, overrides, whichFn);
   addEndpoints(services, raw);
 
+  const explicitPriority = modelPriorityFrom(raw.model_priority);
   const cfg: RouterConfig = {
     services,
+    modelPriority: explicitPriority ?? DEFAULT_MODEL_PRIORITY,
     disabled,
-    ...(apiKeys.gemini_cli ? { geminiApiKey: apiKeys.gemini_cli } : {}),
   };
+  if (apiKeys.gemini_cli) cfg.geminiApiKey = apiKeys.gemini_cli;
   return cfg;
 }
 
@@ -597,11 +479,9 @@ export interface ConfigWatcher {
 }
 
 /**
- * Poll the config file's mtime once per second. When it changes, reload and
- * invoke `onChange`. The returned handle's stop() cancels the poller.
- *
- * Errors from reload are swallowed so a transient parse error doesn't kill
- * the watcher — the next successful poll will pick up a repaired file.
+ * Poll the config file's mtime once per second. When it changes, reload
+ * and invoke `onChange`. Errors during reload are swallowed so a transient
+ * parse error doesn't kill the watcher.
  */
 export function watchConfig(
   path: string,
@@ -629,19 +509,8 @@ export function watchConfig(
     }
   };
 
-  const handle = setInterval(() => {
-    void tick();
-  }, intervalMs);
-  // Don't keep the host process alive just because a watcher is running.
-  // Library users who forget to call `stop()` would otherwise hang on
-  // exit. The MCP server doesn't use this entry point (ConfigHotReloader
-  // polls lazily between tool calls), so this primarily affects external
-  // consumers of the public API.
+  const handle = setInterval(() => void tick(), intervalMs);
   handle.unref?.();
 
-  return {
-    stop(): void {
-      clearInterval(handle);
-    },
-  };
+  return { stop: (): void => clearInterval(handle) };
 }

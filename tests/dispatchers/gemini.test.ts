@@ -58,11 +58,7 @@ function baseSvc(overrides: Partial<ServiceConfig> = {}): ServiceConfig {
     name: "gemini_cli",
     enabled: true,
     type: "cli",
-    tier: 1,
-    weight: 1,
-    cliCapability: 1,
-    escalateOn: [],
-    capabilities: {},
+    tier: "subscription",
     ...overrides,
   };
 }
