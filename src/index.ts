@@ -1,5 +1,5 @@
 /**
- * coding-agent-mcp — TypeScript rewrite.
+ * harness-router-mcp — TypeScript rewrite.
  *
  * Public library surface. Stable starting at R3.
  */
@@ -51,4 +51,6 @@ export {
 // Live dashboard (R3)
 export { renderDashboard, type DashboardState } from "./dashboard/live.js";
 
-export const VERSION = "1.0.0-alpha.0";
+// Single source of truth for the package version. Reads package.json at
+// module load — see src/version.ts for the rationale.
+export { VERSION } from "./version.js";

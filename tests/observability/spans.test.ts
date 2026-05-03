@@ -23,7 +23,7 @@ type RecordedSpan = {
 const recordedSpans: RecordedSpan[] = [];
 
 class StubSpan {
-  private rec: RecordedSpan;
+  private readonly rec: RecordedSpan;
   constructor(name: string) {
     this.rec = {
       name,
@@ -70,12 +70,7 @@ class StubSpan {
 }
 
 class StubTracer {
-  startActiveSpan<T>(
-    name: string,
-    _opts: unknown,
-    _ctx: unknown,
-    fn?: (span: StubSpan) => T,
-  ): T;
+  startActiveSpan<T>(name: string, _opts: unknown, _ctx: unknown, fn?: (span: StubSpan) => T): T;
   startActiveSpan<T>(name: string, fn: (span: StubSpan) => T): T;
   startActiveSpan<T>(name: string, a: unknown, b?: unknown, c?: unknown): T {
     const fn =
@@ -85,9 +80,7 @@ class StubTracer {
           ? (b as (s: StubSpan) => T)
           : (c as (s: StubSpan) => T);
     const span = new StubSpan(name);
-    return context.with(trace.setSpan(context.active(), span as never), () =>
-      fn(span),
-    );
+    return context.with(trace.setSpan(context.active(), span as never), () => fn(span));
   }
   startSpan(name: string): StubSpan {
     return new StubSpan(name);
@@ -125,7 +118,7 @@ describe("withDispatcherSpan", () => {
     );
     expect(result).toBe("ok");
     expect(recordedSpans).toHaveLength(1);
-    expect(recordedSpans[0]!.name).toBe("coding-agent-mcp.dispatcher.dispatch");
+    expect(recordedSpans[0]!.name).toBe("harness-router-mcp.dispatcher.dispatch");
     expect(recordedSpans[0]!.attributes["dispatcher.id"]).toBe("claude_code");
     expect(recordedSpans[0]!.attributes["model"]).toBe("opus-4");
     expect(recordedSpans[0]!.status.code).toBe(SpanStatusCode.OK);
@@ -139,7 +132,7 @@ describe("withDispatcherSpan", () => {
       }),
     ).rejects.toThrow("boom");
     expect(recordedSpans).toHaveLength(1);
-    expect(recordedSpans[0]!.name).toBe("coding-agent-mcp.dispatcher.stream");
+    expect(recordedSpans[0]!.name).toBe("harness-router-mcp.dispatcher.stream");
     expect(recordedSpans[0]!.status.code).toBe(SpanStatusCode.ERROR);
     expect(recordedSpans[0]!.exceptions).toHaveLength(1);
     expect(recordedSpans[0]!.exceptions[0]!.message).toBe("boom");
@@ -149,24 +142,21 @@ describe("withDispatcherSpan", () => {
 
 describe("withRouterSpan", () => {
   it("emits the router span with the correct name", async () => {
-    await withRouterSpan(
-      { "router.op": "route", task_type: "plan" },
-      async () => 1,
-    );
-    expect(recordedSpans[0]!.name).toBe("coding-agent-mcp.router.route");
+    await withRouterSpan({ "router.op": "route", task_type: "plan" }, async () => 1);
+    expect(recordedSpans[0]!.name).toBe("harness-router-mcp.router.route");
     expect(recordedSpans[0]!.attributes["task_type"]).toBe("plan");
   });
 
   it("supports pick_service operation", async () => {
     await withRouterSpan({ "router.op": "pick_service" }, async () => 1);
-    expect(recordedSpans[0]!.name).toBe("coding-agent-mcp.router.pick_service");
+    expect(recordedSpans[0]!.name).toBe("harness-router-mcp.router.pick_service");
   });
 });
 
 describe("withMcpToolSpan", () => {
   it("emits an mcp.tool span with the tool.name attribute", async () => {
     await withMcpToolSpan({ "tool.name": "code_auto" }, async () => 1);
-    expect(recordedSpans[0]!.name).toBe("coding-agent-mcp.mcp.tool");
+    expect(recordedSpans[0]!.name).toBe("harness-router-mcp.mcp.tool");
     expect(recordedSpans[0]!.attributes["tool.name"]).toBe("code_auto");
   });
 });

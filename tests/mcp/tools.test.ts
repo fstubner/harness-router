@@ -19,12 +19,7 @@ import { Router } from "../../src/router.js";
 import { QuotaCache } from "../../src/quota.js";
 import { LeaderboardCache } from "../../src/leaderboard.js";
 import type { Dispatcher } from "../../src/dispatchers/base.js";
-import type {
-  DispatchResult,
-  QuotaInfo,
-  RouterConfig,
-  ServiceConfig,
-} from "../../src/types.js";
+import type { DispatchResult, QuotaInfo, RouterConfig, ServiceConfig } from "../../src/types.js";
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -49,15 +44,17 @@ class FakeDispatcher implements Dispatcher {
   async checkQuota(): Promise<QuotaInfo> {
     return { service: this.id, source: "unknown" };
   }
+  // Stub stream — these tests don't exercise the streaming path; if a
+  // future test does, it'll fail loudly here rather than silently succeed.
+  async *stream(): AsyncIterable<never> {
+    throw new Error("FakeDispatcher.stream() is not implemented");
+  }
   isAvailable(): boolean {
     return this.available;
   }
 }
 
-function makeService(
-  name: string,
-  over: Partial<ServiceConfig> = {},
-): ServiceConfig {
+function makeService(name: string, over: Partial<ServiceConfig> = {}): ServiceConfig {
   return {
     name,
     enabled: true,
@@ -77,15 +74,18 @@ function makeService(
 }
 
 // Build a minimal runtime holder with N fake services.
-function buildHolder(services: Record<string, ServiceConfig>, dispatchers: Record<string, Dispatcher>): RuntimeHolder {
+function buildHolder(
+  services: Record<string, ServiceConfig>,
+  dispatchers: Record<string, Dispatcher>,
+): RuntimeHolder {
   const config: RouterConfig = { services };
   const quota = new QuotaCache(dispatchers, { stateFile: ":memory-not-used:" });
   // Prevent real leaderboard fetches — stub the class at the instance level.
   const leaderboard = new LeaderboardCache();
   // Force the cache into a fetched state so no network call happens.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   (leaderboard as any).fetchedAt = Date.now();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   (leaderboard as any).data = {
     "claude-opus-4-6": 1500,
     "gpt-5.4": 1400,
@@ -109,9 +109,7 @@ function buildHolder(services: Record<string, ServiceConfig>, dispatchers: Recor
 
 // Silence QuotaCache's on-disk writes by pointing at a sandbox path.
 beforeEach(() => {
-  vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(
-    () => undefined,
-  );
+  vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
 });
 
 // ---------------------------------------------------------------------------
@@ -119,14 +117,16 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("MCP tools — TOOL_NAMES", () => {
-  it("exports exactly the 10 required tool names", () => {
-    expect(TOOL_NAMES).toHaveLength(10);
+  it("exports exactly the 12 required tool names", () => {
+    expect(TOOL_NAMES).toHaveLength(12);
     expect(new Set(TOOL_NAMES)).toEqual(
       new Set([
         "code_with_claude",
         "code_with_cursor",
         "code_with_codex",
         "code_with_gemini",
+        "code_with_opencode",
+        "code_with_copilot",
         "code_auto",
         "code_mixture",
         "get_quota_status",
@@ -144,21 +144,22 @@ describe("MCP tools — code_with_<harness>", () => {
     ["code_with_codex", "codex"],
     ["code_with_cursor", "cursor"],
     ["code_with_gemini", "gemini_cli"],
+    ["code_with_opencode", "opencode"],
   ])("%s routes to the matching harness", async (tool, harness) => {
     const services = {
       alpha: makeService("alpha", { harness }),
       beta: makeService("beta", { harness: "other" }), // should not be picked
     };
     const dispatchers: Record<string, Dispatcher> = {
-      alpha: new FakeDispatcher("alpha", { output: `from ${harness}`, service: "alpha", success: true }),
+      alpha: new FakeDispatcher("alpha", {
+        output: `from ${harness}`,
+        service: "alpha",
+        success: true,
+      }),
       beta: new FakeDispatcher("beta", { output: "wrong", service: "beta", success: true }),
     };
     const holder = buildHolder(services, dispatchers);
-    const r = await invokeTool(
-      tool,
-      { prompt: "hi" },
-      { holder },
-    );
+    const r = await invokeTool(tool, { prompt: "hi" }, { holder });
     expect(r.kind).toBe("json");
     const data = r.data as { service: string; success: boolean; output: string };
     expect(data.service).toBe("alpha");
@@ -233,7 +234,9 @@ describe("MCP tools — code_mixture", () => {
       { holder },
     );
     expect(r.kind).toBe("json");
-    const data = r.data as { results: Array<{ service: string; success: boolean; output: string }> };
+    const data = r.data as {
+      results: Array<{ service: string; success: boolean; output: string }>;
+    };
     expect(data.results).toHaveLength(3);
     for (const item of data.results) {
       expect(item.success).toBe(true);
@@ -253,11 +256,7 @@ describe("MCP tools — code_mixture", () => {
       b: new FakeDispatcher("b"),
     };
     const holder = buildHolder(services, dispatchers);
-    const r = await invokeTool(
-      "code_mixture",
-      { prompt: "hi", services: ["b"] },
-      { holder },
-    );
+    const r = await invokeTool("code_mixture", { prompt: "hi", services: ["b"] }, { holder });
     const data = r.data as { results: Array<{ service: string }> };
     expect(data.results).toHaveLength(1);
     expect(data.results[0]!.service).toBe("b");
@@ -320,7 +319,7 @@ describe("MCP tools — introspection", () => {
     const r = await invokeTool("dashboard", {}, { holder });
     expect(r.kind).toBe("text");
     const text = r.data as string;
-    expect(text).toContain("coding-agent-mcp");
+    expect(text).toContain("harness-router-mcp");
     // Token-cap line appears in the dashboard body.
     expect(text).toMatch(/output-cap/);
     expect(text).toMatch(/context/);
@@ -334,7 +333,7 @@ describe("MCP tools — setup", () => {
     const { tmpdir } = await import("node:os");
     const tmp = tmpdir();
     const { mkdtempSync } = await import("node:fs");
-    const fake = mkdtempSync(`${tmp}/coding-agent-mcp-test-`);
+    const fake = mkdtempSync(`${tmp}/harness-router-mcp-test-`);
     const prev = process.env.HOME;
     const prevUserProfile = process.env.USERPROFILE;
     process.env.HOME = fake;

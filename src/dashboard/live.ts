@@ -1,5 +1,5 @@
 /**
- * Live dashboard renderer for coding-agent-mcp.
+ * Live dashboard renderer for harness-router-mcp.
  *
  * Pure function `renderDashboard(state)` → ANSI-formatted string. Consumed
  * by:
@@ -110,8 +110,8 @@ export function renderDashboard(state: DashboardState): string {
   if (ansi) out.push(CLEAR_SCREEN);
 
   // Header
-  if (ansi) out.push(`${BOLD}coding-agent-mcp — live dashboard${RESET}`);
-  else out.push("coding-agent-mcp — live dashboard");
+  if (ansi) out.push(`${BOLD}harness-router-mcp — live dashboard${RESET}`);
+  else out.push("harness-router-mcp — live dashboard");
   out.push(
     ansi
       ? `${DIM}refreshed ${new Date(now).toISOString()}${RESET}`
@@ -178,9 +178,7 @@ export function renderDashboard(state: DashboardState): string {
     out.push("");
   }
 
-  const ready = state.services
-    .filter((s) => s.config.enabled && s.reachable)
-    .map((s) => s.name);
+  const ready = state.services.filter((s) => s.config.enabled && s.reachable).map((s) => s.name);
   out.push(`Ready to route: ${ready.length === 0 ? "none" : ready.join(", ")}`);
 
   return out.join("\n");

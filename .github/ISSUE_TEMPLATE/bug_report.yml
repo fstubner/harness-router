@@ -1,0 +1,86 @@
+name: Bug report
+description: Something the router does that it shouldn't, or fails to do that it should.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. Before filing, please:
+        - Run `harness-router-mcp init` and paste the output below — it tells us a lot at a glance.
+        - Confirm you're on the latest version (`harness-router-mcp --version`, then `npm view harness-router-mcp version` to compare).
+
+  - type: input
+    id: version
+    attributes:
+      label: harness-router-mcp version
+      description: Output of `harness-router-mcp --version`
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows
+        - Other (specify in description)
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node version
+      description: Output of `node --version`
+      placeholder: "v20.x"
+    validations:
+      required: true
+
+  - type: textarea
+    id: init-output
+    attributes:
+      label: "`harness-router-mcp init` output"
+      description: Paste the full output (redact API keys / tokens).
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the unexpected behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproducer
+    attributes:
+      label: Steps to reproduce
+      description: The smaller the reproducer, the faster the fix.
+      placeholder: |
+        1. Configure `config.yaml` with…
+        2. Run `harness-router-mcp …`
+        3. Observe …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs (stderr, OTel spans, etc.)
+      description: Wrap in triple backticks. Redact secrets.
+      render: text
+    validations:
+      required: false

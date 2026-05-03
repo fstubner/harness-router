@@ -1,5 +1,5 @@
 /**
- * Gemini CLI dispatcher for coding-agent-mcp.
+ * Gemini CLI dispatcher for harness-router-mcp.
  *
  * Dispatch:  gemini -p "<prompt>" [--file <path> ...] --output-format json
  *                   [--model <override>]
@@ -33,9 +33,9 @@ import type {
   ServiceConfig,
   ThinkingLevel,
 } from "../types.js";
-import { BaseDispatcher, type DispatchOpts } from "./base.js";
+import { BaseDispatcher, type DispatchOpts, type DispatcherInitOpts } from "./base.js";
+import { detectRateLimitInText } from "./shared/rate-limit-text.js";
 import { streamSubprocess } from "./shared/stream-subprocess.js";
-import { resolveCliCommand } from "./shared/windows-cmd.js";
 
 const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes
 
@@ -59,23 +59,24 @@ interface GeminiJsonResponse {
 // ---------------------------------------------------------------------------
 // Module-level mutex: serialises concurrent Gemini dispatches so the settings
 // patch/restore around each call cannot interleave. Zero dependencies.
+//
+// The lock is exposed via `acquireGeminiLock()` (returns a release function)
+// rather than a wrapping callback — this lets the dispatcher hold the lock
+// across a streaming subprocess invocation while still yielding events live
+// to the caller. The previous `withLock(fn)` wrapper buffered all events and
+// only released after the subprocess exited, which defeated streaming.
 // ---------------------------------------------------------------------------
 
 let lockChain: Promise<void> = Promise.resolve();
 
-function withLock<T>(fn: () => Promise<T>): Promise<T> {
+async function acquireGeminiLock(): Promise<() => void> {
   const prev = lockChain;
   let release!: () => void;
   lockChain = new Promise<void>((r) => {
     release = r;
   });
-  return prev.then(async () => {
-    try {
-      return await fn();
-    } finally {
-      release();
-    }
-  });
+  await prev;
+  return release;
 }
 
 export function _geminiLockIdle(): Promise<void> {
@@ -88,19 +89,30 @@ function settingsPath(): string {
   return path.join(os.homedir(), ".gemini", "settings.json");
 }
 
-async function withThinkingOverride<T>(
+/**
+ * Acquire the gemini settings-patch lock and write the desired thinking
+ * level into `~/.gemini/settings.json`. Returns an async teardown function
+ * that restores the original settings and releases the lock — call it from
+ * a `finally` block so the lock can't leak on errors or generator
+ * cancellation.
+ *
+ * When `level` is undefined or unknown, no patch is performed and the
+ * teardown is a no-op (lock not acquired) — caller pays no synchronisation
+ * cost.
+ */
+async function setupThinkingOverride(
   level: ThinkingLevel | undefined,
-  fn: () => Promise<T>,
-): Promise<T> {
-  if (!level) return fn();
+): Promise<() => Promise<void>> {
+  if (!level) return async () => {};
   const mapped = THINKING_MAP[level];
-  if (!mapped) return fn();
+  if (!mapped) return async () => {};
 
-  return withLock(async () => {
-    const file = settingsPath();
+  const release = await acquireGeminiLock();
+  const file = settingsPath();
+  let originalText: string | null = null;
+
+  try {
     await fs.mkdir(path.dirname(file), { recursive: true });
-
-    let originalText: string | null = null;
     let settings: Record<string, unknown> = {};
     try {
       originalText = await fs.readFile(file, "utf8");
@@ -110,26 +122,28 @@ async function withThinkingOverride<T>(
           settings = parsed as Record<string, unknown>;
         }
       } catch {
-        // Fall through with an empty settings object — we'll restore the
-        // original text verbatim afterwards.
+        // Malformed JSON — fall through with empty settings; we'll restore
+        // the original text verbatim afterwards.
       }
     } catch (err) {
       const e = err as NodeJS.ErrnoException;
+      // ENOENT is expected (no existing settings file). Anything else
+      // bubbles up to the outer catch which calls release(). Don't release
+      // here — that would double-resolve the lock promise.
       if (e?.code !== "ENOENT") throw err;
     }
 
     const modelConfigs = getOrCreateObject(settings, "modelConfigs");
-    const generateContentConfig = getOrCreateObject(
-      modelConfigs,
-      "generateContentConfig",
-    );
+    const generateContentConfig = getOrCreateObject(modelConfigs, "generateContentConfig");
     generateContentConfig["thinkingLevel"] = mapped;
-
     await fs.writeFile(file, JSON.stringify(settings, null, 2), "utf8");
+  } catch (err) {
+    release();
+    throw err;
+  }
 
+  return async () => {
     try {
-      return await fn();
-    } finally {
       if (originalText !== null) {
         try {
           await fs.writeFile(file, originalText, "utf8");
@@ -152,14 +166,13 @@ async function withThinkingOverride<T>(
           // best-effort cleanup
         }
       }
+    } finally {
+      release();
     }
-  });
+  };
 }
 
-function getOrCreateObject(
-  parent: Record<string, unknown>,
-  key: string,
-): Record<string, unknown> {
+function getOrCreateObject(parent: Record<string, unknown>, key: string): Record<string, unknown> {
   const existing = parent[key];
   if (existing && typeof existing === "object" && !Array.isArray(existing)) {
     return existing as Record<string, unknown>;
@@ -177,15 +190,17 @@ export class GeminiDispatcher extends BaseDispatcher {
   readonly id = "gemini_cli";
   private readonly thinkingLevel: ThinkingLevel | undefined;
   private readonly configuredModel: string | undefined;
+  private readonly available: boolean;
 
-  constructor(svc?: ServiceConfig) {
+  constructor(svc?: ServiceConfig, opts: DispatcherInitOpts = {}) {
     super();
     this.thinkingLevel = svc?.thinkingLevel;
     this.configuredModel = svc?.model;
+    this.available = opts.cliPath !== null;
   }
 
   isAvailable(): boolean {
-    return true;
+    return this.available;
   }
 
   async checkQuota(): Promise<QuotaInfo> {
@@ -220,11 +235,10 @@ export class GeminiDispatcher extends BaseDispatcher {
       };
       return;
     }
-    const resolved = await resolveCliCommand("gemini");
 
     const effectiveModel = opts.modelOverride ?? this.configuredModel;
 
-    const args: string[] = [...resolved.prefixArgs];
+    const args: string[] = [];
     if (effectiveModel) {
       args.push("--model", effectiveModel);
     }
@@ -245,25 +259,37 @@ export class GeminiDispatcher extends BaseDispatcher {
     if (workingDir) subOpts.cwd = workingDir;
     if (Object.keys(extraEnv).length > 0) subOpts.env = extraEnv;
 
-    // withThinkingOverride wraps the subprocess invocation — we need to
-    // collect the stream events during the lock-held region. Buffer them
-    // here, then replay.
-    const events: DispatcherEvent[] = [];
+    // Acquire the settings-patch lock and apply the thinking override before
+    // spawning the subprocess. Hold it across the streaming loop so events
+    // pass through live, and release it in `finally` so generator
+    // cancellation (e.g. consumer breaks early) still restores settings.
+    //
+    // Cancellation chain (from outermost to innermost):
+    //   consumer `break`  →  V8 sends `.return()` to outer router generator
+    //                     →  withRouterStreamSpan's finally calls iter.return()
+    //                     →  this #runStream's `for await` on streamSubprocess
+    //                        triggers its own .return() handler, which kills
+    //                        the child
+    //                     →  this finally block runs synchronously and calls
+    //                        teardown() to restore settings.json + release lock
+    // The fix in withRouterStreamSpan (audit pass A: BUG-A4) is what makes
+    // this chain reliable — without it, teardown was deferred to GC.
     const stdoutBuf: string[] = [];
     const stderrBuf: string[] = [];
     let exitCode = -1;
     let durationMs = 0;
     let timedOut = false;
 
-    await withThinkingOverride(this.thinkingLevel, async () => {
-      for await (const evt of streamSubprocess(resolved.command, args, subOpts)) {
+    const teardown = await setupThinkingOverride(this.thinkingLevel);
+    try {
+      for await (const evt of streamSubprocess("gemini", args, subOpts)) {
         if ("stream" in evt) {
           if (evt.stream === "stdout") {
             stdoutBuf.push(evt.chunk);
-            events.push({ type: "stdout", chunk: evt.chunk });
+            yield { type: "stdout", chunk: evt.chunk };
           } else {
             stderrBuf.push(evt.chunk);
-            events.push({ type: "stderr", chunk: evt.chunk });
+            yield { type: "stderr", chunk: evt.chunk };
           }
         } else {
           exitCode = evt.exitCode;
@@ -271,9 +297,9 @@ export class GeminiDispatcher extends BaseDispatcher {
           timedOut = evt.timedOut;
         }
       }
-    });
-
-    for (const e of events) yield e;
+    } finally {
+      await teardown();
+    }
 
     const stdout = stdoutBuf.join("");
     const stderr = stderrBuf.join("");
@@ -309,9 +335,8 @@ export class GeminiDispatcher extends BaseDispatcher {
     }
 
     const combined = `${stdout}\n${stderr}`;
-    const { rateLimited, retryAfter } = detectRateLimit(combined);
-    const errorDetail =
-      stderr.trim() || stdout.trim() || `Exit code ${exitCode}`;
+    const { rateLimited, retryAfter } = detectRateLimitInText(combined);
+    const errorDetail = stderr.trim() || stdout.trim() || `Exit code ${exitCode}`;
 
     const result: DispatchResult = {
       output: parsedText || stdout.trim(),
@@ -361,26 +386,4 @@ function parseGeminiJson(raw: string): ParsedGeminiOutput | null {
   }
 
   return parsed;
-}
-
-function detectRateLimit(text: string): {
-  rateLimited: boolean;
-  retryAfter: number | null;
-} {
-  const lowered = text.toLowerCase();
-  const flagged =
-    lowered.includes("rate limit") ||
-    lowered.includes("quota exceeded") ||
-    lowered.includes("resource_exhausted") ||
-    lowered.includes("too many requests") ||
-    text.includes("429");
-
-  if (!flagged) return { rateLimited: false, retryAfter: null };
-
-  const m = /retry[_\s-]after[:\s]+(\d+(?:\.\d+)?)/i.exec(text);
-  const retryAfter = m?.[1] ? Number.parseFloat(m[1]) : null;
-  return {
-    rateLimited: true,
-    retryAfter: retryAfter !== null && Number.isFinite(retryAfter) ? retryAfter : null,
-  };
 }

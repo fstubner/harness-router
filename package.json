@@ -1,19 +1,26 @@
 {
-  "name": "coding-agent-mcp",
-  "version": "1.0.0-alpha.0",
-  "description": "MCP server that routes coding tasks across Claude Code, Cursor, Codex, and Gemini CLI with quota-aware load balancing. TypeScript rewrite.",
+  "name": "harness-router-mcp",
+  "version": "0.1.0",
+  "description": "MCP server that routes coding tasks across AI CLI harnesses — Claude Code, Cursor, Codex, Gemini — with quota-aware load balancing, circuit breaking, and (model × harness) scoring.",
   "keywords": [
     "mcp",
-    "claude",
-    "coding",
-    "ai-agents",
-    "llm",
+    "model-context-protocol",
+    "harness",
+    "router",
+    "claude-code",
     "cursor",
     "codex",
-    "gemini"
+    "gemini",
+    "opencode",
+    "copilot",
+    "github-copilot",
+    "ai-agents",
+    "load-balancing",
+    "circuit-breaker"
   ],
   "license": "MIT",
   "author": "Felix Stubner",
+  "homepage": "https://fstubner.github.io/harness-router-mcp/",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -24,24 +31,32 @@
     }
   },
   "bin": {
-    "coding-agent-mcp": "./dist/bin.js"
+    "harness-router-mcp": "./dist/bin.js",
+    "harness-router": "./dist/bin.js"
   },
   "files": [
     "dist/",
     "data/",
     "config.example.yaml",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
-    "node": ">=24.0.0"
+    "node": ">=20.0.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/bin.ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "test:parity": "vitest run tests/scoring-parity.test.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "format": "prettier --write \"src/**/*.{ts,tsx}\" \"tests/**/*.{ts,tsx}\" \"scripts/**/*.mjs\" \"*.{json,md,yml}\" \".github/**/*.{yml,md}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx}\" \"tests/**/*.{ts,tsx}\" \"scripts/**/*.mjs\" \"*.{json,md,yml}\" \".github/**/*.{yml,md}\"",
+    "lint": "eslint .",
+    "check": "npm run lint && npm run typecheck && npm run format:check && npm run test",
+    "smoke": "node scripts/mcp-smoke.mjs",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
@@ -55,15 +70,32 @@
     "zod": "^3.24.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^24.0.0",
+    "@types/node": "^20.0.0",
     "@types/which": "^3.0.4",
+    "@vitest/coverage-v8": "^4.1.5",
+    "@vitest/eslint-plugin": "^1.6.16",
+    "eslint": "^10.3.0",
+    "globals": "^17.6.0",
+    "prettier": "^3.8.3",
     "tsx": "^4.20.0",
     "typescript": "^5.8.0",
-    "vitest": "^2.1.0"
+    "typescript-eslint": "^8.59.1",
+    "vitest": "^4.1.5"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "overrides": {
+    "uuid": "^14.0.0",
+    "gaxios": "^7.0.0"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/fstubner/coding-agent-mcp"
+    "url": "git+https://github.com/fstubner/harness-router-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fstubner/harness-router-mcp/issues"
   }
 }

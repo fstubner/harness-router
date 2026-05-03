@@ -15,7 +15,7 @@ import { loadConfig, watchConfig, type WhichFn } from "../src/config.js";
 // ---- fixture files -------------------------------------------------------
 
 async function writeTmpYaml(name: string, text: string): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), `coding-agent-mcp-test-`));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), `harness-router-mcp-test-`));
   const p = path.join(dir, name);
   await fs.writeFile(p, text, "utf-8");
   return p;
@@ -61,6 +61,47 @@ services:
     expect(cfg.services.beta!.type).toBe("openai_compatible");
     expect(cfg.services.beta!.baseUrl).toBe("http://localhost:11434/v1");
   });
+
+  it("parses a `generic_cli` service recipe (extensibility — third-party CLIs)", async () => {
+    // Verifies the YAML → GenericCliRecipe parsing path. Lets users add a
+    // new AI tool without writing TypeScript: just point at the binary and
+    // describe how to assemble argv.
+    const file = await writeTmpYaml(
+      "config.yaml",
+      [
+        "services:",
+        "  my_custom:",
+        "    enabled: true",
+        "    type: generic_cli",
+        "    harness: my_custom",
+        "    command: my-cli",
+        "    tier: 2",
+        "    weight: 1",
+        "    cli_capability: 1",
+        "    args_before_prompt: [run, --no-color]",
+        "    args_after_prompt: [--verbose]",
+        "    model_flag: --model",
+        "    cwd_flag: --workdir",
+        "    forward_env: [MY_CLI_API_KEY, MY_CLI_CONFIG]",
+        "    output_json_path: result",
+        "    tokens_json_path: usage",
+        "    model: gpt-test",
+      ].join("\n"),
+    );
+    const cfg = await loadConfig(file, { whichFn: noCliFound });
+    const svc = cfg.services.my_custom!;
+    expect(svc.type).toBe("generic_cli");
+    expect(svc.command).toBe("my-cli");
+    expect(svc.genericCli).toEqual({
+      argsBeforePrompt: ["run", "--no-color"],
+      argsAfterPrompt: ["--verbose"],
+      modelFlag: "--model",
+      cwdFlag: "--workdir",
+      forwardEnv: ["MY_CLI_API_KEY", "MY_CLI_CONFIG"],
+      outputJsonPath: "result",
+      tokensJsonPath: "usage",
+    });
+  });
 });
 
 describe("loadConfig — auto-detect + overrides", () => {
@@ -84,8 +125,10 @@ describe("loadConfig — auto-detect + overrides", () => {
     expect(Object.keys(cfg.services).sort()).toEqual([
       "claude_code",
       "codex",
+      "copilot",
       "cursor",
       "gemini_cli",
+      "opencode",
     ]);
   });
 
@@ -108,7 +151,7 @@ overrides:
 
   it("honors the disabled list", async () => {
     const yamlText = `
-disabled: [cursor, codex]
+disabled: [cursor, codex, opencode, copilot]
 `;
     const p = await writeTmpYaml("disabled.yaml", yamlText);
     const cfg = await loadConfig(p, { whichFn: allCliFound });

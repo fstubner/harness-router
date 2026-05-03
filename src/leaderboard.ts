@@ -1,5 +1,5 @@
 /**
- * Leaderboard-based quality scoring for coding-agent-mcp.
+ * Leaderboard-based quality scoring for harness-router-mcp.
  *
  * Ported from `coding_agent.leaderboard`. Fetches Arena ELO scores from the
  * public wulong.dev API with a 24-hour cache. Scores are used as routing
@@ -48,7 +48,7 @@ export const QUALITY_MAX = 1.0;
 export const QUALITY_DEFAULT = 0.85;
 
 // User-Agent required — API returns 403 without it
-const USER_AGENT = "coding-agent-mcp/1.0 (leaderboard quality scoring)";
+const USER_AGENT = "harness-router-mcp/1.0 (leaderboard quality scoring)";
 
 // ---------------------------------------------------------------------------
 // Benchmark file resolution
@@ -100,10 +100,7 @@ export function normalizeElo(elo: number): number {
  *   3. All query words appear in the leaderboard name (order-insensitive) →
  *      again prefer the shortest match.
  */
-export function fuzzyMatch(
-  query: string,
-  scores: Record<string, number>,
-): number | null {
+export function fuzzyMatch(query: string, scores: Record<string, number>): number | null {
   const q = query.toLowerCase().trim();
   if (!q) {
     return null;
@@ -151,6 +148,19 @@ export interface QualityScoreResult {
   elo: number | null;
 }
 
+/**
+ * Caches model-quality data sourced from the LMSYS Arena leaderboard
+ * (with a vendored benchmark fallback). Used by {@link Router} to compute
+ * per-service quality scores and auto-derive tiers from ELO bands:
+ *   ELO ≥ 1350 → tier 1, ≥ 1200 → tier 2, otherwise tier 3.
+ *
+ * Fetches are TTL-cached and de-duplicated via an in-flight promise so
+ * concurrent dispatches share a single network request. If the upstream
+ * fetch fails, the cache silently degrades to the vendored benchmark.
+ *
+ * @see Router#pickService for how quality-score and tier feed the
+ *      composite scoring formula.
+ */
 export class LeaderboardCache {
   private data: Record<string, number> = {};
   private fetchedAt = 0; // epoch ms
@@ -159,7 +169,7 @@ export class LeaderboardCache {
   private inflight: Promise<void> | null = null;
   private benchmark: Record<string, number> = {};
   private benchmarkLoadedFlag = false;
-  private benchmarkPath: string;
+  private readonly benchmarkPath: string;
 
   constructor(benchmarkPath?: string) {
     this.benchmarkPath = benchmarkPath ?? resolveBenchmarkPath();
@@ -201,8 +211,7 @@ export class LeaderboardCache {
     leaderboardModel: string | undefined,
     thinkingLevel: ThinkingLevel | undefined,
   ): Promise<QualityScoreResult> {
-    const mult =
-      (thinkingLevel && THINKING_MULTIPLIERS[thinkingLevel]) ?? 1.0;
+    const mult = (thinkingLevel && THINKING_MULTIPLIERS[thinkingLevel]) ?? 1.0;
 
     // 1. Blended benchmark file
     if (leaderboardModel && this.benchmarkLoadedFlag) {
@@ -341,5 +350,4 @@ export class LeaderboardCache {
       // Malformed — silently fall back.
     }
   }
-
 }

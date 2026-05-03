@@ -94,14 +94,33 @@ class Mutex {
  */
 export class ConfigHotReloader {
   private readonly mutex = new Mutex();
+  private stopped = false;
 
   constructor(
     private readonly holder: RuntimeHolder,
     private readonly configPath?: string,
   ) {}
 
+  /**
+   * Cause subsequent `maybeReload()` calls to short-circuit. Used by the
+   * MCP server's shutdown path to prevent a concurrent reload from racing
+   * with `close()` — without this, a tool call that fires just as the
+   * server is shutting down can build a fresh runtime state via
+   * `holder.replace(next)` and the new state's dispatchers + QuotaCache
+   * are never signalled to stop. After `stop()` returns, no new reload
+   * will start; an in-flight reload is already inside the mutex and
+   * completes naturally.
+   */
+  async stop(): Promise<void> {
+    this.stopped = true;
+    // Drain the mutex — wait for any in-flight reload to finish so callers
+    // can rely on "after stop() returns, holder.state is stable."
+    await this.mutex.run(async () => {});
+  }
+
   /** Returns true iff a reload actually happened. Swallows all errors. */
   async maybeReload(): Promise<boolean> {
+    if (this.stopped) return false;
     if (!this.configPath) return false;
     const mtimeMs = await statMtime(this.configPath);
     if (mtimeMs === 0) return false;
@@ -112,6 +131,15 @@ export class ConfigHotReloader {
       // reloaded, in which case we bail without redoing the work.
       const current = this.holder.state.mtimeMs;
       if (mtimeMs <= current) return false;
+
+      // Flush the OLD QuotaCache's pending writes BEFORE bootstrapping a new
+      // one. Otherwise both caches write to ~/.harness-router/quota_state.json
+      // concurrently and the rename-from-tmp last-write-wins drops counts.
+      try {
+        await this.holder.state.quota.flush();
+      } catch {
+        // Best-effort — proceed with reload regardless.
+      }
 
       let next: RuntimeState;
       try {
@@ -126,14 +154,20 @@ export class ConfigHotReloader {
       }
 
       // Preserve circuit-breaker state for services that still exist.
+      // Note: `cooldownRemainingSec` is the REMAINING duration at snapshot
+      // time, not the total cooldown. Use `restoreTripped` (not `trip`) —
+      // `trip(N)` would treat N as the total cooldown starting now, which
+      // would slightly extend already-running cooldowns and, worse,
+      // re-trip near-expired breakers for the full 300 s default when the
+      // remaining duration rounded to 0.
       const oldRouter = this.holder.state.router;
       const oldBreakerStatus = oldRouter.circuitBreakerStatus();
       for (const [name, status] of Object.entries(oldBreakerStatus)) {
         if (!(name in next.config.services)) continue;
         const nb = next.router.getBreaker(name);
         if (!nb) continue;
-        if (status.tripped) {
-          nb.trip(status.cooldownRemainingSec ?? undefined);
+        if (status.tripped && status.cooldownRemainingSec !== undefined) {
+          nb.restoreTripped(status.cooldownRemainingSec);
         }
       }
 

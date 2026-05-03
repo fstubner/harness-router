@@ -1,4 +1,4 @@
-# coding-agent-mcp — service configuration
+# harness-router-mcp — service configuration
 #
 # ── Architecture: (model × harness) ─────────────────────────────────────────
 #
@@ -333,6 +333,99 @@ services:
   #   weight: 0.9
   #   tier: 1
   #   thinking_level: high
+
+  # ── Generic CLI (extensibility) ──────────────────────────────────────────
+  #
+  # `type: generic_cli` lets you add ANY headless coding CLI to the router
+  # without writing a TypeScript dispatcher — the recipe below describes how
+  # to assemble argv, where to find the response in stdout, and which env
+  # vars to forward.
+  #
+  # ⚠ TRUST WARNING ⚠
+  # `command` is executed via PATH resolution. Anyone who can edit this
+  # config file can make the router execute any binary on PATH (or absolute
+  # path you specify). Treat config.yaml as you would `.bashrc` —
+  # restrict its permissions, don't commit user-edits to a shared repo,
+  # and don't load configs from untrusted sources.
+  #
+  # The router does NOT sandbox the spawned process. The CLI runs with the
+  # same privileges as harness-router-mcp itself — which on a desktop host
+  # means full read/write access to your home directory. Use OS-level
+  # isolation (Docker, Codespaces, Vercel Sandbox, etc.) if you need
+  # stronger guarantees.
+  #
+  # When to use this vs. a hand-tuned dispatcher:
+  #   ✓ Your CLI takes a prompt as a positional argument
+  #   ✓ The agent's reply is on stdout (plain text or JSON)
+  #   ✓ Errors / rate limits go to stderr
+  #   ✗ You need live tool_use / thinking events streamed mid-run
+  #     (those need a format-specific JSONL parser — write a real dispatcher)
+  #   ✗ The CLI requires patching its own config files between calls
+  #
+  # The router skips this service silently when the binary isn't on PATH —
+  # safe to leave commented blocks for tools you might install later.
+  #
+  # my_custom_cli:
+  #   enabled: false
+  #   type: generic_cli
+  #   harness: my_custom_cli       # the harness id used by code_auto's
+                                    # `hints.harness` filter. NOTE: there is
+                                    # NO auto-registered code_with_<custom>
+                                    # tool — that shortcut exists only for
+                                    # the 6 built-in harnesses. Route via
+                                    # code_auto + `hints.harness`.
+  #   command: my-cli              # bare name; the router resolves via `which`
+  #   tier: 2
+  #   weight: 1.0
+  #   cli_capability: 1.0
+  #   model: my-default-model      # optional; modelOverride wins if both set
+  #
+  #   # Argv assembly. Final shape:
+  #   #   [...args_before_prompt, ?model_flag/model, ?cwd_flag/workingDir,
+  #   #    <prompt>, ...args_after_prompt]
+  #   # Each flag is appended ONLY when its value is present — empty fields
+  #   # vanish from argv (they don't become "" arguments).
+  #   args_before_prompt: [run, --no-color]
+  #   args_after_prompt: []
+  #   model_flag: --model          # omit to never pass --model
+  #   cwd_flag: --workdir          # omit to use only subprocess cwd, no flag
+  #
+  #   # Prompt delivery — three modes:
+  #   #   "positional" (default) — prompt becomes one positional argv entry
+  #   #   "flag"                 — prompt becomes [prompt_flag, <text>],
+  #   #                            placed AFTER model/cwd flags. Required for
+  #   #                            CLIs that take prompts via --prompt or -p.
+  #   #   "stdin"                — prompt is fed on the child's stdin (and
+  #   #                            stdin is closed). The CLI reads until EOF.
+  #   prompt_delivery: positional
+  #   prompt_flag: --prompt        # required when prompt_delivery: flag
+  #
+  #   # Env vars to forward from the host process. Only those actually set in
+  #   # the host environment are passed through — empty values aren't sent.
+  #   forward_env: [MY_CLI_API_KEY, MY_CLI_CONFIG]
+  #
+  #   # Suggested re-auth command — surfaces in `init` once the onboarding
+  #   # probe is widened to dynamically discover generic_cli services from
+  #   # config (currently a known gap; only the 6 built-in harnesses appear
+  #   # in `init`).
+  #   auth_command: "my-cli auth login"
+  #
+  #   # Optional structured output. When `output_json_path` is set, stdout is
+  #   # parsed as JSON and the dotted path is read for the response text.
+  #   # If parsing fails, the dispatcher falls back to plain stdout — a
+  #   # misconfigured path doesn't break the dispatch.
+  #   #   path examples:
+  #   #     "result"                          → top-level field
+  #   #     "choices.0.message.content"       → nested + array index
+  #   output_json_path: result
+  #   tokens_json_path: usage      # accepts {input,output} | {input_tokens,
+  #                                #   output_tokens} | {prompt_tokens,
+  #                                #   completion_tokens}
+  #
+  #   capabilities:
+  #     execute: 0.9
+  #     plan: 0.7
+  #     review: 0.7
 
 # How long (seconds) to cache proactive quota check results.
 quota_cache_ttl: 300

@@ -35,7 +35,7 @@ function makeFetchMock(init: MockResponseInit) {
       opts?.headers instanceof Headers
         ? opts.headers.get("User-Agent")
         : (opts?.headers as Record<string, string> | undefined)?.["User-Agent"];
-    expect(ua).toBe("coding-agent-mcp/1.0 (leaderboard quality scoring)");
+    expect(ua).toBe("harness-router-mcp/1.0 (leaderboard quality scoring)");
     expect(String(input)).toBe(LEADERBOARD_URL);
 
     if (init.throwError) {
@@ -157,10 +157,7 @@ describe("LeaderboardCache.getQualityScore", () => {
 
     // Use a fresh cache with a path that won't load any benchmark file.
     const cache = new LeaderboardCache("/nonexistent/path/benchmarks.json");
-    const { qualityScore, elo } = await cache.getQualityScore(
-      "testmodel",
-      "medium",
-    );
+    const { qualityScore, elo } = await cache.getQualityScore("testmodel", "medium");
 
     // normalized(1300) = 0.80; mult(medium) = 1.07 → 0.856
     expect(qualityScore).toBeCloseTo(0.8 * 1.07, 8);
@@ -174,10 +171,7 @@ describe("LeaderboardCache.getQualityScore", () => {
     installFetch(mock);
 
     const cache = new LeaderboardCache("/nonexistent/path/benchmarks.json");
-    const { qualityScore, elo } = await cache.getQualityScore(
-      "unknown-xyz",
-      "high",
-    );
+    const { qualityScore, elo } = await cache.getQualityScore("unknown-xyz", "high");
 
     expect(qualityScore).toBeCloseTo(QUALITY_DEFAULT * 1.15, 8);
     expect(elo).toBeNull();

@@ -1,5 +1,5 @@
 /**
- * MCP server entry points for coding-agent-mcp.
+ * MCP server entry points for harness-router-mcp.
  *
  * Exposes:
  *   startMcpServer({ configPath })            — stdio transport (default).
@@ -15,20 +15,26 @@ import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 import { bootstrapRuntime, ConfigHotReloader, RuntimeHolder } from "./config-hot-reload.js";
 import { registerTools } from "./tools.js";
+import { registerPrompts } from "./prompts.js";
 import { initObservability } from "../observability/index.js";
+import { VERSION } from "../version.js";
 
-// Read the package version lazily so this module stays dependency-free.
-const SERVER_NAME = "coding-agent-mcp";
-const SERVER_VERSION = "1.0.0-alpha.0";
+const SERVER_NAME = "harness-router-mcp";
+const SERVER_VERSION = VERSION;
 
 const SERVER_INSTRUCTIONS =
   "Route coding tasks via code_auto (with taskType hint: execute | plan | review), " +
-  "code_mixture (to fan out to multiple services), or code_with_<harness>. " +
-  "Use dashboard / get_quota_status / list_available_services to inspect live state.";
+  "code_mixture (to fan out to multiple services), or " +
+  "code_with_<claude|cursor|codex|gemini|opencode|copilot>. " +
+  "Third-party CLIs registered via YAML are reachable through " +
+  "code_auto({hints:{harness:'<id>'}}) — there is no auto-registered " +
+  "code_with_<custom> tool for them. " +
+  "Use dashboard / get_quota_status / list_available_services to inspect live state. " +
+  "Pre-built prompts (route-coding-task, compare-implementations, harness-health-check, " +
+  "onboard-coding-stack, pick-best-harness) are available via the host's prompt picker.";
 
 // ---------------------------------------------------------------------------
 // Builder — shared between stdio and HTTP entry points
@@ -61,6 +67,7 @@ export async function buildMcpServer(opts: BuildMcpOptions = {}): Promise<BuiltM
     { instructions: SERVER_INSTRUCTIONS },
   );
   registerTools(server, { holder, reloader });
+  registerPrompts(server, { holder });
   return { server, holder, reloader };
 }
 
@@ -72,12 +79,38 @@ export interface McpHandle {
   close(): Promise<void>;
 }
 
+/**
+ * Start an MCP server bound to stdio (the default transport for desktop
+ * hosts like Claude Desktop and Cursor). The returned handle's `close()`
+ * stops the hot-reloader, flushes the QuotaCache, and shuts down the
+ * server cleanly.
+ *
+ * Single-session by design — stdio is one process, one client.
+ *
+ * @see startMcpHttpServer for the multi-session HTTP transport.
+ */
 export async function startMcpServer(opts: BuildMcpOptions = {}): Promise<McpHandle> {
-  const { server } = await buildMcpServer(opts);
+  const { server, holder, reloader } = await buildMcpServer(opts);
   const transport = new StdioServerTransport();
   await server.connect(transport);
   return {
     async close() {
+      // Stop the reloader BEFORE closing the server so a concurrent
+      // reload can't swap in a fresh runtime state during shutdown
+      // (audit pass A: BUG-A3).
+      try {
+        await reloader.stop();
+      } catch {
+        /* best-effort */
+      }
+      // Flush any pending quota writes so counts persist across restarts.
+      // Audit pass A flagged that the stdio path was leaking the
+      // QuotaCache's writeChain on shutdown.
+      try {
+        await holder.state.quota.flush();
+      } catch {
+        /* best-effort */
+      }
       await server.close();
     },
   };
@@ -98,15 +131,53 @@ export interface StartHttpOptions extends BuildMcpOptions {
   route?: string;
 }
 
+/**
+ * Start an MCP server over Streamable-HTTP transport. Multi-session: each
+ * incoming connection gets its own `McpServer` + transport pair (per the
+ * SDK pattern — `Protocol.connect()` throws on a second call to one
+ * server instance). The shared runtime state (config, dispatchers,
+ * quota cache, hot-reloader) is built once and reused across sessions.
+ *
+ * Threat boundary: NO authentication is configured by default. Bind to
+ * loopback for desktop-host use, or place a reverse proxy in front
+ * for remote use. Session IDs are UUIDv4 (128-bit, unguessable).
+ *
+ * @see startMcpServer for the stdio transport (single session).
+ */
 export async function startMcpHttpServer(opts: StartHttpOptions = {}): Promise<HttpMcpHandle> {
-  const { server } = await buildMcpServer(opts);
+  // The MCP SDK's `Protocol.connect()` throws if called twice on the same
+  // server instance ("Already connected to a transport"). So for stateful
+  // multi-session HTTP we follow the official `simpleStreamableHttp` pattern:
+  // share the heavy bootstrap (config, dispatchers, runtime holder, hot
+  // reloader) across sessions, but spin up a fresh `McpServer` + `transport`
+  // pair per session. The shared holder means tools see the same live
+  // routing state regardless of which session called them.
+  await initObservability();
+  const stateOpts: { configPath?: string } = {};
+  if (opts.configPath !== undefined) stateOpts.configPath = opts.configPath;
+  const state = await bootstrapRuntime(stateOpts);
+  const holder = new RuntimeHolder(state);
+  const reloader = new ConfigHotReloader(holder, opts.configPath);
+
   const route = opts.route ?? "/mcp";
   const port = opts.port ?? 0;
 
-  // One transport per session (stateful). Sessions are negotiated via the
-  // `mcp-session-id` HTTP header.
-  const transports = new Map<string, StreamableHTTPServerTransport>();
-  let connected = false;
+  // One transport AND one McpServer per session. We track both so we can
+  // close them on session end and during shutdown.
+  const sessions = new Map<
+    string,
+    { transport: StreamableHTTPServerTransport; server: McpServer }
+  >();
+
+  const buildPerSessionServer = (): McpServer => {
+    const server = new McpServer(
+      { name: SERVER_NAME, version: SERVER_VERSION },
+      { instructions: SERVER_INSTRUCTIONS },
+    );
+    registerTools(server, { holder, reloader });
+    registerPrompts(server, { holder });
+    return server;
+  };
 
   const http: HttpServer = createServer(async (req, res) => {
     try {
@@ -118,22 +189,41 @@ export async function startMcpHttpServer(opts: StartHttpOptions = {}): Promise<H
       }
       const sessionId = (req.headers["mcp-session-id"] as string | undefined) ?? undefined;
       let transport: StreamableHTTPServerTransport;
-      if (sessionId && transports.has(sessionId)) {
-        transport = transports.get(sessionId)!;
+      if (sessionId && sessions.has(sessionId)) {
+        transport = sessions.get(sessionId)!.transport;
       } else {
+        // New session: build a transport AND a per-session McpServer, then
+        // connect them. Without the per-session server we'd hit the
+        // "Already connected" throw on the second session.
+        const sessionServer = buildPerSessionServer();
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (sid: string) => {
-            transports.set(sid, transport);
+            sessions.set(sid, { transport, server: sessionServer });
           },
         });
         transport.onclose = () => {
-          if (transport.sessionId) transports.delete(transport.sessionId);
+          const sid = transport.sessionId;
+          if (sid) {
+            const entry = sessions.get(sid);
+            sessions.delete(sid);
+            // Best-effort close the per-session server too — frees its
+            // hold on the transport callbacks. Errors here are harmless;
+            // the transport is already going down.
+            entry?.server.close().catch(() => undefined);
+          }
         };
-        if (!connected) {
-          await server.connect(transport as unknown as Transport);
-          connected = true;
-        }
+        // The SDK's `StreamableHTTPServerTransport` exposes
+        // `sessionId: string | undefined` (a getter that may not yet be
+        // initialized) while the imported `Transport` type declares it as
+        // optional (`?: string`). With `exactOptionalPropertyTypes: true`,
+        // those two are structurally different. The runtime is correct;
+        // narrow via `Parameters<>` to track the SDK's actual signature
+        // — if a future SDK update reshapes `connect()`, this cast becomes
+        // an error here rather than silently accepting wrong types.
+        await sessionServer.connect(
+          transport as unknown as Parameters<typeof sessionServer.connect>[0],
+        );
       }
       await transport.handleRequest(req, res);
     } catch (err) {
@@ -155,16 +245,39 @@ export async function startMcpHttpServer(opts: StartHttpOptions = {}): Promise<H
   return {
     port: actualPort,
     async close() {
-      for (const t of transports.values()) {
+      // Stop the reloader BEFORE iterating sessions. Without this, a
+      // concurrent `maybeReload()` could call `holder.replace(next)` mid-
+      // shutdown, leaving the new state's dispatchers / quota cache
+      // un-flushed (audit pass A: BUG-A3).
+      try {
+        await reloader.stop();
+      } catch {
+        /* best-effort */
+      }
+      // Flush pending quota writes from the SHARED holder before tearing
+      // down sessions — every per-session McpServer reads from the same
+      // holder, so the quota cache is shared and only needs flushing once.
+      try {
+        await holder.state.quota.flush();
+      } catch {
+        /* best-effort */
+      }
+      // Close every per-session pair. Transport and server may both error
+      // on close if the connection was already torn down — swallow.
+      for (const { transport, server } of sessions.values()) {
         try {
-          await t.close();
+          await transport.close();
         } catch {
-          // best-effort
+          /* best-effort */
+        }
+        try {
+          await server.close();
+        } catch {
+          /* best-effort */
         }
       }
-      transports.clear();
+      sessions.clear();
       await new Promise<void>((resolve) => http.close(() => resolve()));
-      await server.close();
     },
   };
 }

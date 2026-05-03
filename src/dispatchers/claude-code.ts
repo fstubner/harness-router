@@ -1,5 +1,5 @@
 /**
- * Claude Code CLI dispatcher for coding-agent-mcp.
+ * Claude Code CLI dispatcher for harness-router-mcp.
  *
  * Dispatch:  claude -p "<prompt>" --output-format json
  *                  --allowedTools "Bash,Read,Edit,Write"
@@ -21,10 +21,10 @@
  */
 
 import which from "which";
-import type { DispatchResult, DispatcherEvent, QuotaInfo } from "../types.js";
-import { BaseDispatcher, type DispatchOpts } from "./base.js";
+import type { DispatchResult, DispatcherEvent, QuotaInfo, ServiceConfig } from "../types.js";
+import { BaseDispatcher, type DispatchOpts, type DispatcherInitOpts } from "./base.js";
+import { detectRateLimitInText } from "./shared/rate-limit-text.js";
 import { streamSubprocess } from "./shared/stream-subprocess.js";
-import { resolveCliCommand } from "./shared/windows-cmd.js";
 
 const ALLOWED_TOOLS = "Bash,Read,Edit,Write";
 const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes
@@ -41,16 +41,27 @@ interface ClaudeJsonResult {
 
 export class ClaudeCodeDispatcher extends BaseDispatcher {
   readonly id = "claude_code";
+  private readonly available: boolean;
+
+  constructor(_svc?: ServiceConfig, opts: DispatcherInitOpts = {}) {
+    super();
+    // cliPath === null is an explicit "CLI not on PATH" signal from the
+    // factory. cliPath === undefined (legacy callers / tests) defaults to
+    // available so existing behaviour is preserved.
+    this.available = opts.cliPath !== null;
+  }
 
   isAvailable(): boolean {
-    // Synchronous check; runtime availability is re-verified at dispatch time
-    // via resolveCliCommand (which performs the actual PATH lookup).
-    return true;
+    // Reports the cliPath check done at construction. Runtime availability
+    // is re-verified at dispatch time via `which` + safeSpawn.
+    return this.available;
   }
 
   async checkQuota(): Promise<QuotaInfo> {
     // No proactive quota endpoint for Claude Code (subscription auth).
-    // Reactive circuit-breaker handles rate limits. Deferred to R3.
+    // Rate limits are detected reactively from dispatch output via
+    // `detectRateLimitInText` and surfaced through `DispatchResult.rateLimited`,
+    // which the router's circuit breaker honours.
     return { service: "claude_code", source: "unknown" };
   }
 
@@ -82,7 +93,6 @@ export class ClaudeCodeDispatcher extends BaseDispatcher {
       };
       return;
     }
-    const resolved = await resolveCliCommand("claude");
 
     let fullPrompt = prompt;
     if (files.length > 0) {
@@ -91,7 +101,6 @@ export class ClaudeCodeDispatcher extends BaseDispatcher {
     }
 
     const args: string[] = [
-      ...resolved.prefixArgs,
       "-p",
       fullPrompt,
       "--output-format",
@@ -115,7 +124,7 @@ export class ClaudeCodeDispatcher extends BaseDispatcher {
     let durationMs = 0;
     let timedOut = false;
 
-    for await (const evt of streamSubprocess(resolved.command, args, subOpts)) {
+    for await (const evt of streamSubprocess("claude", args, subOpts)) {
       if ("stream" in evt) {
         if (evt.stream === "stdout") {
           stdoutBuf.push(evt.chunk);
@@ -160,6 +169,16 @@ export class ClaudeCodeDispatcher extends BaseDispatcher {
     if (parsed.tokensUsed) result.tokensUsed = parsed.tokensUsed;
     if (exitCode !== 0) {
       result.error = stderr.trim() || `Exit code ${exitCode}`;
+      // Lift rate-limit / quota signals onto the result so the circuit
+      // breaker honours retry-after instead of treating the failure as
+      // generic. The earlier R3 comment ("Reactive circuit-breaker handles
+      // rate limits. Deferred to R3.") was a forgotten TODO — this is the
+      // missing wiring.
+      const { rateLimited, retryAfter } = detectRateLimitInText(`${stdout}\n${stderr}`);
+      if (rateLimited) {
+        result.rateLimited = true;
+        if (retryAfter !== null) result.retryAfter = retryAfter;
+      }
     }
 
     yield { type: "completion", result };

@@ -16,9 +16,7 @@ describe("parseRemaining", () => {
   });
 
   it("parses x-ratelimit-remaining-requests", () => {
-    expect(
-      parseRemaining({ "x-ratelimit-remaining-requests": "42" }),
-    ).toBe(42);
+    expect(parseRemaining({ "x-ratelimit-remaining-requests": "42" })).toBe(42);
   });
 
   it("parses x-ratelimit-remaining as fallback", () => {
@@ -26,9 +24,7 @@ describe("parseRemaining", () => {
   });
 
   it("parses anthropic-ratelimit-requests-remaining", () => {
-    expect(
-      parseRemaining({ "anthropic-ratelimit-requests-remaining": "100" }),
-    ).toBe(100);
+    expect(parseRemaining({ "anthropic-ratelimit-requests-remaining": "100" })).toBe(100);
   });
 
   it("is case-insensitive on header names (mixed case)", () => {
@@ -79,9 +75,7 @@ describe("parseLimit", () => {
   });
 
   it("parses anthropic-ratelimit-requests-limit", () => {
-    expect(
-      parseLimit({ "anthropic-ratelimit-requests-limit": "4000" }),
-    ).toBe(4000);
+    expect(parseLimit({ "anthropic-ratelimit-requests-limit": "4000" })).toBe(4000);
   });
 
   it("is case-insensitive on header names", () => {
@@ -182,9 +176,7 @@ describe("parseRetryAfter — epoch reset", () => {
 
   it("clamps past epoch values to 0", () => {
     const nowSec = Math.floor(Date.now() / 1000);
-    expect(parseRetryAfter({ "x-ratelimit-reset": String(nowSec - 500) })).toBe(
-      0,
-    );
+    expect(parseRetryAfter({ "x-ratelimit-reset": String(nowSec - 500) })).toBe(0);
   });
 
   it("prefers delta-seconds Retry-After over epoch reset", () => {

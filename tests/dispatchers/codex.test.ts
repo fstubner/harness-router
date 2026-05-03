@@ -4,29 +4,20 @@ import type {
   RunSubprocessOpts,
 } from "../../src/dispatchers/shared/subprocess.js";
 
+// Dispatchers no longer call resolveCliCommand directly — Windows .cmd
+// quoting now lives in safeSpawn (covered by tests/safe-spawn.test.ts).
 vi.mock("../../src/dispatchers/shared/subprocess.js", () => ({
   runSubprocess: vi.fn(),
-}));
-vi.mock("../../src/dispatchers/shared/windows-cmd.js", () => ({
-  resolveCliCommand: vi.fn(),
 }));
 vi.mock("which", () => ({
   default: vi.fn(),
 }));
 
-const { runSubprocess } = await import(
-  "../../src/dispatchers/shared/subprocess.js"
-);
-const { resolveCliCommand } = await import(
-  "../../src/dispatchers/shared/windows-cmd.js"
-);
+const { runSubprocess } = await import("../../src/dispatchers/shared/subprocess.js");
 const { default: which } = await import("which");
 const { CodexDispatcher } = await import("../../src/dispatchers/codex.js");
 
 const runSubprocessMock = runSubprocess as unknown as ReturnType<typeof vi.fn>;
-const resolveCliCommandMock = resolveCliCommand as unknown as ReturnType<
-  typeof vi.fn
->;
 const whichMock = which as unknown as ReturnType<typeof vi.fn>;
 
 function ok(overrides: Partial<SubprocessResult> = {}): SubprocessResult {
@@ -57,17 +48,12 @@ function captureSubprocessCall(index: number): {
 
 function mockFound(commandPath = "/usr/local/bin/codex"): void {
   whichMock.mockResolvedValue(commandPath);
-  resolveCliCommandMock.mockResolvedValue({
-    command: commandPath,
-    prefixArgs: [],
-  });
 }
 
 const savedEnv = { ...process.env };
 
 beforeEach(() => {
   runSubprocessMock.mockReset();
-  resolveCliCommandMock.mockReset();
   whichMock.mockReset();
 });
 
@@ -92,6 +78,55 @@ describe("CodexDispatcher", () => {
     expect(res.service).toBe("codex");
     expect(res.error).toMatch(/codex CLI not found/i);
     expect(runSubprocessMock).not.toHaveBeenCalled();
+  });
+
+  it("passes the bare command name (`codex`) to runSubprocess", async () => {
+    mockFound();
+    runSubprocessMock.mockResolvedValue(ok({ stdout: "ok" }));
+
+    const d = new CodexDispatcher();
+    await d.dispatch("hi", [], "");
+
+    const { command } = captureSubprocessCall(0);
+    // Bare-name contract: safeSpawn (inside streamSubprocess) handles which()
+    // resolution and Windows .cmd quoting. Dispatchers must NOT pre-resolve.
+    expect(command).toBe("codex");
+  });
+
+  it("includes --skip-git-repo-check so codex 0.125+ runs in non-git cwds", async () => {
+    mockFound();
+    runSubprocessMock.mockResolvedValue(ok({ stdout: "ok" }));
+
+    const d = new CodexDispatcher();
+    await d.dispatch("hi", [], "");
+
+    const { args } = captureSubprocessCall(0);
+    // Locks the flag in: without it, codex 0.125+ would refuse to run in any
+    // workingDir that isn't a trusted git repo (onboarding probes, scratch
+    // dirs, /tmp, etc.) — there's no terminal to accept the prompt headlessly.
+    expect(args).toContain("--skip-git-repo-check");
+    expect(args).toContain("--full-auto");
+    expect(args).toContain("--json");
+  });
+
+  it("flags rate-limit signals in stderr and lifts retry-after onto the result", async () => {
+    mockFound();
+    runSubprocessMock.mockResolvedValue(
+      ok({
+        exitCode: 1,
+        stderr: "Error: rate limit exceeded for 5h window. retry-after: 90",
+      }),
+    );
+
+    const d = new CodexDispatcher();
+    const res = await d.dispatch("hi", [], "");
+
+    // The router's breaker reads `rateLimited` + `retryAfter` to honour the
+    // backoff; without this lift, codex failures looked like generic
+    // exit-code errors and the breaker treated them as opaque.
+    expect(res.success).toBe(false);
+    expect(res.rateLimited).toBe(true);
+    expect(res.retryAfter).toBe(90);
   });
 
   it("extracts the last agent_message item from JSONL output", async () => {
@@ -223,15 +258,62 @@ describe("CodexDispatcher", () => {
 
   it("reports failure on a non-zero exit code", async () => {
     mockFound();
-    runSubprocessMock.mockResolvedValue(
-      ok({ stdout: "", stderr: "something broke", exitCode: 2 }),
-    );
+    runSubprocessMock.mockResolvedValue(ok({ stdout: "", stderr: "something broke", exitCode: 2 }));
 
     const d = new CodexDispatcher();
     const res = await d.dispatch("go", [], "");
 
     expect(res.success).toBe(false);
     expect(res.error).toBe("something broke");
+  });
+
+  it('surfaces JSONL `{type:"error"}` events as the error and flags rate-limit (regression: usage-limit was buried in stderr noise)', async () => {
+    // This is the real-world failure mode the codex dispatcher missed
+    // until 0.1.0. Codex emits an `error` JSONL event on stdout AND exits
+    // 0; we must:
+    //   1. Treat the dispatch as failure (success: false)
+    //   2. Surface the human-readable message as `error`
+    //   3. Run rate-limit detection on the message (not just stderr,
+    //      which contains unrelated transport noise)
+    mockFound();
+    const stdout = [
+      JSON.stringify({ type: "thread.started", thread_id: "abc" }),
+      JSON.stringify({ type: "turn.started" }),
+      JSON.stringify({
+        type: "error",
+        message:
+          "You've hit your usage limit. Upgrade to Pro or try again at May 5th, 2026 11:45 AM.",
+      }),
+      JSON.stringify({
+        type: "turn.failed",
+        error: { message: "You've hit your usage limit." },
+      }),
+      "",
+    ].join("\n");
+    // Stderr has unrelated noise — codex's internal GitHub-MCP transport
+    // failing because of stale tokens for an MCP server configured INSIDE
+    // codex. This is NOT what we want to surface as the error.
+    const stderr =
+      "Reading additional input from stdin...\n" +
+      "ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(...)\n";
+    runSubprocessMock.mockResolvedValue(
+      ok({ stdout, stderr, exitCode: 0 }), // codex exits 0 even on usage-limit
+    );
+
+    const d = new CodexDispatcher();
+    const res = await d.dispatch("go", [], "");
+
+    expect(res.success).toBe(false);
+    expect(res.error).toBe("You've hit your usage limit.");
+    // Output preferred fallback is the error message (since no agent_message
+    // arrived before the failure).
+    expect(res.output).toBe("You've hit your usage limit.");
+    // The rate-limit detector should fire on "usage limit" in the error
+    // message — this is what trips the router's circuit breaker.
+    expect(res.rateLimited).toBe(true);
+    // Should NOT include the unrelated GitHub-MCP transport spam.
+    expect(res.error).not.toContain("rmcp::transport::worker");
+    expect(res.error).not.toContain("AuthRequired");
   });
 
   it("reports 'unknown' quota in R1", async () => {

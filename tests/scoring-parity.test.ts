@@ -12,7 +12,7 @@
  * the routing hints, and the expected winning service + final_score.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 // ---- Mocks (same shape as router.test.ts) -------------------------------
 
@@ -48,7 +48,7 @@ vi.mock("../src/circuit-breaker.js", () => {
 
 vi.mock("../src/quota.js", () => {
   class QuotaCache {
-    private scores = new Map<string, number>();
+    private readonly scores = new Map<string, number>();
     setScore(service: string, score: number): void {
       this.scores.set(service, score);
     }
@@ -62,7 +62,7 @@ vi.mock("../src/quota.js", () => {
 
 vi.mock("../src/leaderboard.js", () => {
   class LeaderboardCache {
-    private models = new Map<string, { qualityScore: number; elo: number | null }>();
+    private readonly models = new Map<string, { qualityScore: number; elo: number | null }>();
     setModel(model: string, qualityScore: number, elo: number | null = null): void {
       this.models.set(model, { qualityScore, elo });
     }
@@ -118,6 +118,9 @@ class Stub implements Dispatcher {
   }
   async checkQuota(): Promise<never> {
     throw new Error("n/a");
+  }
+  async *stream(): AsyncIterable<never> {
+    throw new Error("Stub.stream() is not implemented");
   }
   isAvailable(): boolean {
     return true;
@@ -309,18 +312,17 @@ function buildContext(fixture: Fixture): {
   quota: QuotaCache;
   leaderboard: LeaderboardCache;
 } {
-  const quota = new QuotaCache();
+  const quota = new QuotaCache({});
   const leaderboard = new LeaderboardCache();
   for (const m of fixture.models) {
-    (leaderboard as unknown as {
-      setModel: (model: string, q: number, elo: number | null) => void;
-    }).setModel(m.model, m.qualityScore, m.elo);
+    (
+      leaderboard as unknown as {
+        setModel: (model: string, q: number, elo: number | null) => void;
+      }
+    ).setModel(m.model, m.qualityScore, m.elo);
   }
   for (const q of fixture.quotas ?? []) {
-    (quota as unknown as { setScore: (s: string, v: number) => void }).setScore(
-      q.service,
-      q.score,
-    );
+    (quota as unknown as { setScore: (s: string, v: number) => void }).setScore(q.service, q.score);
   }
   const services: Record<string, ServiceConfig> = {};
   const dispatchers: Record<string, Dispatcher> = {};
@@ -338,11 +340,6 @@ function buildContext(fixture: Fixture): {
 }
 
 describe("Scoring parity with Python router.py:265-280", () => {
-  let warned = false;
-  beforeEach(() => {
-    warned = false;
-  });
-
   for (const fixture of FIXTURES) {
     it(fixture.name, async () => {
       const { router } = buildContext(fixture);
@@ -353,16 +350,10 @@ describe("Scoring parity with Python router.py:265-280", () => {
       expect(decision!.service).toBe(fixture.expected.service);
       expect(decision!.tier).toBe(fixture.expected.tier);
       // 4-decimal precision check on the final score.
-      expect(Number(decision!.finalScore.toFixed(4))).toBeCloseTo(
-        fixture.expected.finalScore,
-        4,
-      );
+      expect(Number(decision!.finalScore.toFixed(4))).toBeCloseTo(fixture.expected.finalScore, 4);
       if (fixture.expected.reasonContains) {
         expect(decision!.reason).toContain(fixture.expected.reasonContains);
       }
-      // touch the flag so the lint doesn't complain about the unused var
-      if (!warned) warned = true;
-      expect(warned).toBe(true);
     });
   }
 });

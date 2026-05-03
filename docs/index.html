@@ -1,0 +1,570 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Harness Router MCP — same model, different harness, different result</title>
+<meta name="description" content="An MCP server that routes coding tasks across Claude Code, Cursor, Codex, Gemini CLI, OpenCode, and GitHub Copilot CLI — quota-aware, circuit-breaking, and (model × harness) scored. Plug in any other CLI with a one-line YAML entry." />
+<meta name="theme-color" content="#0e0f12" />
+
+<meta property="og:title" content="Harness Router MCP" />
+<meta property="og:description" content="Same model, different harness, different result. Route coding tasks across Claude Code, Cursor, Codex, Gemini, OpenCode, and GitHub Copilot CLI — plus any other CLI you plug in via YAML." />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://fstubner.github.io/harness-router-mcp/" />
+<meta name="twitter:card" content="summary_large_image" />
+
+<style>
+  :root {
+    --bg: #0e0f12;
+    --bg-elev: #15171c;
+    --bg-code: #14161a;
+    --border: #25272d;
+    --border-soft: #1d1f25;
+    --text: #ecebe8;
+    --text-soft: #b8b6b1;
+    --text-muted: #8a8985;
+    --accent: #d4926b;
+    --accent-soft: rgba(212, 146, 107, 0.12);
+    --accent-line: rgba(212, 146, 107, 0.4);
+    --green: #95b884;
+    --red: #c97c7c;
+    --serif: ui-serif, Iowan, Georgia, Cambria, "Times New Roman", Times, serif;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Monaco, "Cascadia Mono", "Roboto Mono", Consolas, "Liberation Mono", monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body {
+    margin: 0;
+    font-family: var(--sans);
+    color: var(--text);
+    background: var(--bg);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection { background: var(--accent-soft); color: var(--accent); }
+
+  a {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px solid var(--accent-line);
+    transition: border-color 0.15s ease;
+  }
+  a:hover { border-bottom-color: var(--accent); }
+
+  code, kbd {
+    font-family: var(--mono);
+    font-size: 0.92em;
+    background: var(--bg-code);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    padding: 0.08em 0.4em;
+    color: var(--text-soft);
+  }
+  pre {
+    font-family: var(--mono);
+    font-size: 0.88rem;
+    background: var(--bg-code);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    overflow-x: auto;
+    line-height: 1.6;
+    color: var(--text-soft);
+    margin: 1rem 0;
+  }
+  pre code {
+    background: transparent;
+    border: 0;
+    padding: 0;
+    font-size: inherit;
+  }
+  .comment { color: var(--text-muted); font-style: italic; }
+  .kw { color: var(--accent); }
+  .str { color: var(--green); }
+
+  /* ─────────────────── layout ─────────────────── */
+  .page {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 6rem;
+  }
+
+  header.top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.5rem 0 4rem;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+  }
+  header.top .brand {
+    font-family: var(--mono);
+    letter-spacing: 0.02em;
+  }
+  header.top .brand .dot {
+    display: inline-block;
+    width: 0.45rem;
+    height: 0.45rem;
+    background: var(--accent);
+    border-radius: 50%;
+    margin-right: 0.5rem;
+    vertical-align: middle;
+  }
+  header.top nav a {
+    margin-left: 1.5rem;
+    color: var(--text-muted);
+    border: 0;
+  }
+  header.top nav a:hover { color: var(--text); }
+
+  /* ─────────────────── hero ─────────────────── */
+  .hero h1 {
+    font-family: var(--serif);
+    font-weight: 400;
+    font-size: clamp(2.5rem, 6.5vw, 4.25rem);
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    margin: 0 0 1.5rem;
+  }
+  .hero h1 .accent { color: var(--accent); font-style: italic; }
+  .hero .lede {
+    font-size: 1.15rem;
+    color: var(--text-soft);
+    max-width: 32em;
+    margin: 0 0 2.5rem;
+  }
+  .hero .cta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    align-items: center;
+    margin-bottom: 1.5rem;
+  }
+  .hero .cta .install {
+    font-family: var(--mono);
+    font-size: 0.92rem;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.7rem 1rem;
+    color: var(--text-soft);
+    user-select: all;
+  }
+  .hero .cta .install .prompt { color: var(--text-muted); margin-right: 0.4rem; }
+  .hero .cta .btn {
+    font-family: var(--sans);
+    font-size: 0.92rem;
+    border: 1px solid var(--accent-line);
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-radius: 8px;
+    padding: 0.7rem 1.1rem;
+    text-decoration: none;
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+  .hero .cta .btn:hover { background: var(--accent-line); border-color: var(--accent); }
+  .hero .meta {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+  }
+  .hero .meta a { color: var(--text-muted); border-bottom-color: var(--border); }
+  .hero .meta a:hover { color: var(--text-soft); }
+
+  /* ─────────────────── sections ─────────────────── */
+  section { margin: 5rem 0; }
+  section h2 {
+    font-family: var(--serif);
+    font-weight: 400;
+    font-size: clamp(1.6rem, 3vw, 2.1rem);
+    line-height: 1.15;
+    letter-spacing: -0.015em;
+    margin: 0 0 1rem;
+  }
+  section h3 {
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: 1rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin: 2.5rem 0 0.75rem;
+  }
+  section p { color: var(--text-soft); }
+  .eyebrow {
+    display: inline-block;
+    font-size: 0.78rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--accent);
+    margin-bottom: 0.6rem;
+  }
+
+  /* ─────────────────── matrix ─────────────────── */
+  .matrix-wrap {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin: 2rem 0 1rem;
+    overflow-x: auto;
+  }
+  .matrix {
+    display: grid;
+    grid-template-columns: 11rem repeat(4, minmax(5rem, 1fr));
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    min-width: 32rem;
+    font-size: 0.86rem;
+  }
+  .matrix .cell {
+    background: var(--bg-elev);
+    padding: 0.65rem 0.75rem;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+  .matrix .cell.row-label {
+    text-align: left;
+    color: var(--text-soft);
+    font-family: var(--mono);
+    font-size: 0.82rem;
+  }
+  .matrix .cell.col-label {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    background: var(--bg);
+  }
+  .matrix .cell.col-label.corner { background: var(--bg); }
+  .matrix .cell.score-best { color: var(--accent); font-weight: 600; }
+  .matrix .cell.score-good { color: var(--text); }
+  .matrix .cell.score-mid  { color: var(--text-soft); }
+  .matrix .cell.score-na   { color: var(--text-muted); font-style: italic; }
+  .matrix-caption {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin-top: 0.75rem;
+    line-height: 1.5;
+  }
+
+  /* ─────────────────── tools list ─────────────────── */
+  .tools {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    margin: 1.5rem 0;
+  }
+  .tool {
+    display: grid;
+    grid-template-columns: minmax(10rem, 13rem) 1fr;
+    gap: 1.25rem;
+    padding: 0.9rem 1.1rem;
+    background: var(--bg-elev);
+    border-bottom: 1px solid var(--border);
+    align-items: baseline;
+  }
+  .tool:last-child { border-bottom: 0; }
+  .tool-name { font-family: var(--mono); font-size: 0.88rem; color: var(--accent); }
+  .tool-desc { color: var(--text-soft); font-size: 0.94rem; }
+
+  /* ─────────────────── steps ─────────────────── */
+  .scoring {
+    list-style: none;
+    padding: 0;
+    margin: 1.5rem 0 0;
+    counter-reset: step;
+  }
+  .scoring li {
+    counter-increment: step;
+    position: relative;
+    padding: 0.75rem 0 0.75rem 3rem;
+    border-bottom: 1px solid var(--border-soft);
+    color: var(--text-soft);
+  }
+  .scoring li:last-child { border-bottom: 0; }
+  .scoring li::before {
+    content: counter(step, decimal-leading-zero);
+    position: absolute;
+    left: 0;
+    top: 0.85rem;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--accent);
+    letter-spacing: 0.04em;
+  }
+  .scoring li strong {
+    color: var(--text);
+    font-weight: 600;
+    display: block;
+    margin-bottom: 0.1rem;
+  }
+
+  /* ─────────────────── footer ─────────────────── */
+  footer {
+    margin-top: 6rem;
+    padding-top: 2rem;
+    border-top: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+  footer a { color: var(--text-muted); border-bottom-color: var(--border); }
+  footer a:hover { color: var(--text-soft); border-bottom-color: var(--text-muted); }
+
+  /* ─────────────────── responsive ─────────────────── */
+  @media (max-width: 540px) {
+    .page { padding: 1.5rem 1.25rem 4rem; }
+    header.top { padding-bottom: 2rem; flex-direction: column; align-items: flex-start; gap: 0.5rem; }
+    header.top nav a { margin-left: 0; margin-right: 1rem; }
+    .hero .cta { flex-direction: column; align-items: stretch; }
+    .hero .cta .install, .hero .cta .btn { width: 100%; text-align: center; }
+    .tool { grid-template-columns: 1fr; gap: 0.25rem; }
+    .matrix { grid-template-columns: 8rem repeat(4, minmax(3.5rem, 1fr)); font-size: 0.78rem; }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .reveal { opacity: 0; transform: translateY(0.75rem); transition: opacity 0.6s ease, transform 0.6s ease; }
+    .reveal.in  { opacity: 1; transform: none; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header class="top">
+  <div class="brand"><span class="dot"></span>harness-router-mcp</div>
+  <nav>
+    <a href="#how">how it works</a>
+    <a href="#tools">tools</a>
+    <a href="#install">install</a>
+    <a href="https://github.com/fstubner/harness-router-mcp">github</a>
+  </nav>
+</header>
+
+<section class="hero">
+  <h1>
+    Same model.<br />
+    Different harness.<br />
+    <span class="accent">Different result.</span>
+  </h1>
+  <p class="lede">
+    Other LLM routers stop at the model layer. <strong>Harness Router</strong> routes
+    agentic CLIs — recognising that Claude inside Cursor isn’t the same thing as
+    Claude inside Claude Code, even when it’s the exact same underlying model.
+  </p>
+  <div class="cta">
+    <code class="install"><span class="prompt">$</span>npx -y harness-router-mcp mcp</code>
+    <a class="btn" href="https://github.com/fstubner/harness-router-mcp">View on GitHub →</a>
+  </div>
+  <div class="meta">
+    MCP server · TypeScript · Node 20+ · MIT · npm:
+    <a href="https://www.npmjs.com/package/harness-router-mcp">harness-router-mcp</a>
+  </div>
+</section>
+
+<section id="why" class="reveal">
+  <span class="eyebrow">The framing</span>
+  <h2>The harness is half the answer.</h2>
+  <p>
+    A model alone doesn’t edit your codebase. The <em>harness</em> does — Cursor’s
+    workspace indexer, Claude Code’s Bash and Read tools, Codex’s
+    <code>--full-auto</code> loop, Gemini’s 2M-token context. The same weights
+    behave differently behind different scaffolds.
+  </p>
+  <p>
+    Harness Router scores every <strong>(model × harness)</strong> pair as a
+    first-class service. Your task lands in the harness whose tooling actually
+    fits the work, not just the harness whose underlying model tops a
+    leaderboard.
+  </p>
+
+  <div class="matrix-wrap">
+    <div class="matrix" role="table" aria-label="Same model, different harness, different score">
+      <div class="cell col-label corner">model × harness</div>
+      <div class="cell col-label">claude_code</div>
+      <div class="cell col-label">cursor</div>
+      <div class="cell col-label">codex</div>
+      <div class="cell col-label">gemini_cli</div>
+
+      <div class="cell row-label">claude-opus-4-6</div>
+      <div class="cell score-best">0.94</div>
+      <div class="cell score-good">0.89</div>
+      <div class="cell score-na">—</div>
+      <div class="cell score-na">—</div>
+
+      <div class="cell row-label">claude-sonnet-4-6</div>
+      <div class="cell score-good">0.86</div>
+      <div class="cell score-best">0.91</div>
+      <div class="cell score-na">—</div>
+      <div class="cell score-na">—</div>
+
+      <div class="cell row-label">gpt-5.4</div>
+      <div class="cell score-na">—</div>
+      <div class="cell score-na">—</div>
+      <div class="cell score-best">0.93</div>
+      <div class="cell score-na">—</div>
+
+      <div class="cell row-label">gemini-3.1-pro</div>
+      <div class="cell score-na">—</div>
+      <div class="cell score-na">—</div>
+      <div class="cell score-na">—</div>
+      <div class="cell score-mid">0.82</div>
+    </div>
+    <p class="matrix-caption">
+      Illustrative composite scores. Sonnet is stronger in Cursor (codebase
+      indexing) than in Claude Code; Opus inverts the relationship. Same
+      weights, different harness, different fit.
+    </p>
+  </div>
+</section>
+
+<section id="how" class="reveal">
+  <span class="eyebrow">How it picks</span>
+  <h2>Five signals, one decision.</h2>
+  <p>
+    For every dispatch, the router scores each enabled service and routes to
+    the highest live score. No coin-flips, no round-robin.
+  </p>
+  <ol class="scoring">
+    <li>
+      <strong>quality_score</strong>
+      Normalised ELO × thinking multiplier. Source priority: bundled
+      benchmark blend (Arena + Aider + SWE-bench) → live Arena code leaderboard
+      → conservative default.
+    </li>
+    <li>
+      <strong>cli_capability</strong>
+      How much the harness adds beyond raw model. Reference points:
+      <code>claude_code</code> 1.10, <code>codex</code> 1.08,
+      <code>cursor</code> 1.05, <code>gemini_cli</code> 1.00.
+    </li>
+    <li>
+      <strong>capabilities[task_type]</strong>
+      Per-service relative strength on <code>execute</code> /
+      <code>plan</code> / <code>review</code>. Cursor crushes execute; Opus
+      wins plan; Gemini holds for long-context review.
+    </li>
+    <li>
+      <strong>quota_score</strong>
+      Live availability ∈ [0, 1], updated from each dispatch response. When a
+      free tier exhausts, traffic flows away from it.
+    </li>
+    <li>
+      <strong>circuit_breaker</strong>
+      Failing services trip out of rotation automatically. Recovery is
+      half-open + probed — no more cascading retry storms.
+    </li>
+  </ol>
+</section>
+
+<section id="tools" class="reveal">
+  <span class="eyebrow">MCP surface</span>
+  <h2>Twelve tools your client gets for free.</h2>
+  <p>
+    Drop the server into Claude Desktop, Cursor, or any MCP client. The
+    routing logic, leaderboard cache, quota tracking, and circuit breakers
+    are wrapped behind twelve plain tools — and any third-party CLI you
+    register via YAML routes through <code>code_auto</code> with the
+    <code>harness</code> hint.
+  </p>
+
+  <div class="tools">
+    <div class="tool"><div class="tool-name">code_auto</div><div class="tool-desc">Pick the best available service for the prompt. Hints: <code>task_type</code>, <code>harness</code>, <code>prefer_large_context</code>, <code>service</code>.</div></div>
+    <div class="tool"><div class="tool-name">code_mixture</div><div class="tool-desc">Fan out to multiple services in parallel. Returns every output for synthesis — use it on architecture decisions.</div></div>
+    <div class="tool"><div class="tool-name">code_with_claude</div><div class="tool-desc">Force any enabled <code>claude_code</code> harness service.</div></div>
+    <div class="tool"><div class="tool-name">code_with_cursor</div><div class="tool-desc">Force any enabled <code>cursor</code> harness service.</div></div>
+    <div class="tool"><div class="tool-name">code_with_codex</div><div class="tool-desc">Force any enabled <code>codex</code> harness service.</div></div>
+    <div class="tool"><div class="tool-name">code_with_gemini</div><div class="tool-desc">Force any enabled <code>gemini_cli</code> harness service.</div></div>
+    <div class="tool"><div class="tool-name">code_with_opencode</div><div class="tool-desc">Force any enabled <code>opencode</code> harness service. Provider-agnostic OSS agent with multi-subscription support.</div></div>
+    <div class="tool"><div class="tool-name">code_with_copilot</div><div class="tool-desc">Force any enabled <code>copilot</code> harness service. The standalone <code>@github/copilot</code> agentic CLI — GitHub-tooling-aware (gh, repo, PR context).</div></div>
+    <div class="tool"><div class="tool-name">get_quota_status</div><div class="tool-desc">JSON summary of quota usage and circuit-breaker state per service.</div></div>
+    <div class="tool"><div class="tool-name">list_available_services</div><div class="tool-desc">Which services are enabled and CLI-reachable on this host.</div></div>
+    <div class="tool"><div class="tool-name">dashboard</div><div class="tool-desc">Formatted overview of services, tiers, ELO, quota, and breaker state.</div></div>
+    <div class="tool"><div class="tool-name">setup</div><div class="tool-desc">Guided check of CLI auth, quota access, and config validity.</div></div>
+  </div>
+</section>
+
+<section id="install" class="reveal">
+  <span class="eyebrow">Install</span>
+  <h2>Two commands and a config block.</h2>
+  <p>Requires <strong>Node 20+</strong> and at least one installed CLI: <code>claude</code>, <code>codex</code>, <code>gemini</code>, Cursor’s <code>agent</code>, <code>opencode</code>, <code>copilot</code> (GitHub Copilot CLI), or any third-party CLI you register via YAML. Authenticate the ones you want to use, then drop the server into your MCP client.</p>
+
+  <h3>1. Install</h3>
+<pre><code><span class="comment"># One-shot — no global install</span>
+npx -y harness-router-mcp mcp
+
+<span class="comment"># Or install globally</span>
+npm install -g harness-router-mcp
+harness-router-mcp --help</code></pre>
+
+  <h3>2. Wire into Claude Desktop / Cursor</h3>
+<pre><code>{
+  <span class="str">"mcpServers"</span>: {
+    <span class="str">"harness-router"</span>: {
+      <span class="str">"command"</span>: <span class="str">"npx"</span>,
+      <span class="str">"args"</span>: [<span class="str">"-y"</span>, <span class="str">"harness-router-mcp"</span>, <span class="str">"mcp"</span>],
+      <span class="str">"env"</span>: {
+        <span class="str">"HARNESS_ROUTER_CONFIG"</span>: <span class="str">"/path/to/config.yaml"</span>,
+        <span class="str">"GEMINI_API_KEY"</span>: <span class="str">"your-key-here"</span>
+      }
+    }
+  }
+}</code></pre>
+
+  <h3>3. Optional — tune defaults</h3>
+<pre><code><span class="comment"># config.yaml — zero config also works; this just tunes auto-detect.</span>
+<span class="kw">overrides</span>:
+  claude_code: { weight: <span class="str">1.2</span> }
+  gemini_cli:  { thinking_level: medium }
+
+<span class="kw">disabled</span>: [cursor]    <span class="comment"># skip an installed CLI</span></code></pre>
+  <p>Restart your MCP client. The twelve tools above are live in chat — and on the CLI as <code>harness-router-mcp dashboard --watch</code>.</p>
+</section>
+
+<footer>
+  <div>
+    Built by <a href="https://github.com/fstubner">Felix Stubner</a> · MIT licensed
+  </div>
+  <div>
+    <a href="https://github.com/fstubner/harness-router-mcp">github</a>
+    &nbsp;·&nbsp;
+    <a href="https://www.npmjs.com/package/harness-router-mcp">npm</a>
+    &nbsp;·&nbsp;
+    <a href="https://modelcontextprotocol.io">mcp</a>
+  </div>
+</footer>
+
+</div>
+
+<script>
+  // Progressive enhancement: fade-in on scroll. Page is fully usable without JS.
+  if ('IntersectionObserver' in window) {
+    const io = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('in');
+          io.unobserve(entry.target);
+        }
+      }
+    }, { rootMargin: '0px 0px -10% 0px', threshold: 0.05 });
+    document.querySelectorAll('.reveal').forEach((el) => io.observe(el));
+  } else {
+    document.querySelectorAll('.reveal').forEach((el) => el.classList.add('in'));
+  }
+</script>
+
+</body>
+</html>

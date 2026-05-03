@@ -103,7 +103,7 @@ function makeConfig(services: ServiceConfig[]): RouterConfig {
 
 class ScriptedDispatcher implements Dispatcher {
   readonly id: string;
-  private scripts: DispatcherEvent[][] = [];
+  private readonly scripts: DispatcherEvent[][] = [];
   dispatchCalls = 0;
   streamCalls = 0;
 
@@ -151,7 +151,7 @@ describe("Router.stream", () => {
   let leaderboard: LeaderboardCache;
 
   beforeEach(() => {
-    quota = new QuotaCache();
+    quota = new QuotaCache({});
     leaderboard = new LeaderboardCache();
   });
 
@@ -165,12 +165,7 @@ describe("Router.stream", () => {
         result: { output: "chunk-1chunk-2", service: "alpha", success: true },
       },
     ]);
-    const router = new Router(
-      makeConfig([svc("alpha")]),
-      quota,
-      { alpha },
-      leaderboard,
-    );
+    const router = new Router(makeConfig([svc("alpha")]), quota, { alpha }, leaderboard);
     const events: DispatcherEvent[] = [];
     let decisionSeen = false;
     for await (const { event, decision } of router.stream("p", [], "/tmp")) {
@@ -200,10 +195,7 @@ describe("Router.stream", () => {
       },
     ]);
     const router = new Router(
-      makeConfig([
-        svc("alpha", { tier: 1 }),
-        svc("beta", { tier: 2 }),
-      ]),
+      makeConfig([svc("alpha", { tier: 1 }), svc("beta", { tier: 2 })]),
       quota,
       { alpha, beta },
       leaderboard,
@@ -245,10 +237,7 @@ describe("Router.stream", () => {
       },
     ]);
     const router = new Router(
-      makeConfig([
-        svc("alpha", { tier: 1 }),
-        svc("beta", { tier: 2 }),
-      ]),
+      makeConfig([svc("alpha", { tier: 1 }), svc("beta", { tier: 2 })]),
       quota,
       { alpha, beta },
       leaderboard,
@@ -303,6 +292,34 @@ describe("Router.stream", () => {
     expect(services[0]).toBe("alpha");
   });
 
+  it("streamTo emits an error completion for an unknown service (audit B: GAP-8)", async () => {
+    const router = new Router(makeConfig([svc("alpha")]), quota, {}, leaderboard);
+    const events: Array<{ type: string; result?: { success: boolean; error?: string } }> = [];
+    for await (const { event } of router.streamTo("nonexistent", "p", [], "/tmp")) {
+      events.push(event as { type: string; result?: { success: boolean; error?: string } });
+    }
+    const completion = events.find((e) => e.type === "completion");
+    expect(completion).toBeDefined();
+    expect(completion?.result?.success).toBe(false);
+    expect(completion?.result?.error).toMatch(/nonexistent/i);
+  });
+
+  it("streamTo emits an error completion when the service's circuit breaker is tripped (audit B: WEAK-5)", async () => {
+    const alpha = new ScriptedDispatcher("alpha");
+    const router = new Router(makeConfig([svc("alpha")]), quota, { alpha }, leaderboard);
+    (router.getBreaker("alpha") as unknown as { forceTrip(): void }).forceTrip();
+
+    const events: Array<{ type: string; result?: { success: boolean; error?: string } }> = [];
+    for await (const { event } of router.streamTo("alpha", "p", [], "/tmp")) {
+      events.push(event as { type: string; result?: { success: boolean; error?: string } });
+    }
+    const completion = events.find((e) => e.type === "completion");
+    expect(completion).toBeDefined();
+    expect(completion?.result?.success).toBe(false);
+    // Critically: the dispatcher was never invoked.
+    expect(alpha.streamCalls).toBe(0);
+  });
+
   it("buffered route() is still implemented and works alongside stream()", async () => {
     const alpha = new ScriptedDispatcher("alpha");
     alpha.push([
@@ -311,12 +328,7 @@ describe("Router.stream", () => {
         result: { output: "buffered", service: "alpha", success: true },
       },
     ]);
-    const router = new Router(
-      makeConfig([svc("alpha")]),
-      quota,
-      { alpha },
-      leaderboard,
-    );
+    const router = new Router(makeConfig([svc("alpha")]), quota, { alpha }, leaderboard);
     const { result } = await router.route("p", [], "/tmp");
     expect(result.success).toBe(true);
     expect(result.output).toBe("buffered");

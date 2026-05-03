@@ -4,8 +4,17 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Mock the rate-limit-header parsers. Agent 1 owns their real implementation;
-// we only need a stable stub here to verify wiring.
+// History: this file used to mock `../src/dispatchers/base.js` and
+// `../src/types.js` as empty objects ({}) "because Agent 1 owns them" —
+// scaffolding from the multi-agent port. Audit pass B flagged those mocks
+// as a real correctness hazard: any code that read a runtime value from
+// types.js (an enum, a const) would silently get undefined and the test
+// would still pass. The real modules exist now and are well-defined, so
+// we use them directly.
+//
+// Only the shared rate-limit-header parsers stay stubbed — that's a
+// genuine test seam since we want to verify the wiring rather than the
+// parsers themselves (which have their own dedicated test file).
 vi.mock("../src/dispatchers/shared/rate-limit-headers.js", () => ({
   parseRemaining: (h: Record<string, string>) => {
     const v = h["x-ratelimit-remaining"];
@@ -16,13 +25,6 @@ vi.mock("../src/dispatchers/shared/rate-limit-headers.js", () => ({
     return v !== undefined ? Number(v) : null;
   },
 }));
-
-// Stub the Dispatcher base module (Agent 1 owns it). Only the type shape
-// matters for TS resolution; runtime import just needs to not throw.
-vi.mock("../src/dispatchers/base.js", () => ({}));
-
-// Stub ./types (Agent 1 owns it).
-vi.mock("../src/types.js", () => ({}));
 
 import { QuotaCache, QuotaState } from "../src/quota.js";
 import type { Dispatcher } from "../src/dispatchers/base.js";
@@ -110,10 +112,7 @@ describe("QuotaState.score", () => {
 
 describe("QuotaCache.recordResult", () => {
   it("updates state from rateLimitHeaders via parseRemaining / parseLimit", () => {
-    const cache = new QuotaCache(
-      { svc: makeDispatcher("svc") },
-      { stateFile: tmpFile() },
-    );
+    const cache = new QuotaCache({ svc: makeDispatcher("svc") }, { stateFile: tmpFile() });
 
     const result: DispatchResult = {
       output: "",
@@ -138,10 +137,7 @@ describe("QuotaCache.recordResult", () => {
   });
 
   it("does nothing when there are no headers and not rate-limited", () => {
-    const cache = new QuotaCache(
-      { svc: makeDispatcher("svc") },
-      { stateFile: tmpFile() },
-    );
+    const cache = new QuotaCache({ svc: makeDispatcher("svc") }, { stateFile: tmpFile() });
     const result: DispatchResult = {
       output: "",
       service: "svc",
@@ -185,10 +181,7 @@ describe("QuotaCache TTL-based refresh", () => {
   });
 
   it("returns score 1.0 when dispatcher is unknown", async () => {
-    const cache = new QuotaCache(
-      { svc: makeDispatcher("svc") },
-      { stateFile: tmpFile() },
-    );
+    const cache = new QuotaCache({ svc: makeDispatcher("svc") }, { stateFile: tmpFile() });
     const score = await cache.getQuotaScore("nonexistent");
     expect(score).toBe(1.0);
   });
@@ -202,10 +195,7 @@ describe("QuotaCache local call counts", () => {
   it("persists local call counts to the state file and reloads them", async () => {
     const file = tmpFile();
 
-    const cache1 = new QuotaCache(
-      { svc: makeDispatcher("svc") },
-      { stateFile: file },
-    );
+    const cache1 = new QuotaCache({ svc: makeDispatcher("svc") }, { stateFile: file });
     const result: DispatchResult = {
       output: "",
       service: "svc",
@@ -226,10 +216,7 @@ describe("QuotaCache local call counts", () => {
 
     // A fresh cache should load the persisted count and expose it via
     // fullStatus().localCallCount.
-    const cache2 = new QuotaCache(
-      { svc: makeDispatcher("svc") },
-      { stateFile: file },
-    );
+    const cache2 = new QuotaCache({ svc: makeDispatcher("svc") }, { stateFile: file });
     const status = await cache2.fullStatus();
     expect(status["svc"]!.localCallCount).toBe(3);
   });
@@ -255,15 +242,8 @@ describe("QuotaCache local call counts", () => {
 
   it("loads existing state file on construction", async () => {
     const file = tmpFile();
-    writeFileSync(
-      file,
-      JSON.stringify({ svc: { local_calls: 7 } }, null, 2),
-      "utf-8",
-    );
-    const cache = new QuotaCache(
-      { svc: makeDispatcher("svc") },
-      { stateFile: file },
-    );
+    writeFileSync(file, JSON.stringify({ svc: { local_calls: 7 } }, null, 2), "utf-8");
+    const cache = new QuotaCache({ svc: makeDispatcher("svc") }, { stateFile: file });
     const status = await cache.fullStatus();
     expect(status["svc"]!.localCallCount).toBe(7);
   });
@@ -271,10 +251,7 @@ describe("QuotaCache local call counts", () => {
   it("tolerates a malformed state file", async () => {
     const file = tmpFile();
     writeFileSync(file, "{not valid json", "utf-8");
-    const cache = new QuotaCache(
-      { svc: makeDispatcher("svc") },
-      { stateFile: file },
-    );
+    const cache = new QuotaCache({ svc: makeDispatcher("svc") }, { stateFile: file });
     const status = await cache.fullStatus();
     expect(status["svc"]!.localCallCount).toBe(0);
   });

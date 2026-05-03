@@ -1,5 +1,5 @@
 /**
- * Tool registry for the coding-agent-mcp server.
+ * Tool registry for the harness-router-mcp server.
  *
  * Each tool here is defined as a plain object with a name, description, zod
  * input schema, and an async handler. `registerTools()` attaches them all to
@@ -19,10 +19,7 @@ import os from "node:os";
 import path from "node:path";
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type {
-  CallToolResult,
-  ServerNotification,
-} from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 import type { DispatchResult, DispatcherEvent, RouteHints, TaskType } from "../types.js";
@@ -32,56 +29,103 @@ import type { ConfigHotReloader } from "./config-hot-reload.js";
 
 // ---------------------------------------------------------------------------
 // Shared zod schemas
+//
+// Input bounds are deliberate. The router doesn't sanitize prompts (they're
+// freeform task descriptions for an LLM), but it does cap each input axis
+// so a malicious or buggy caller can't drive the server into unbounded
+// memory growth or pathological argv lengths.
+//
+//   MAX_PROMPT_BYTES: 1 MB. Generous for natural-language prompts; matches
+//     the buffered-output cap in subprocess.ts so a hostile prompt can't
+//     dwarf the 10 MB stdout cap. Anyone with a real reason to send more
+//     than this should be using the Files API or batched calls.
+//   MAX_FILES: 256. Per-file path is path.MAX_PATH on Windows; capping at
+//     256 entries bounds argv length when generic_cli's args_per_file
+//     expands every path into a flag pair.
+//   MAX_PATH_LEN: 4096. Larger than Windows MAX_PATH (260) so cross-platform
+//     long-path mode works; smaller than the Linux PATH_MAX (typically 4096
+//     by convention but not enforced) so we cap before the kernel does.
+//   workingDir.refine: must be empty or absolute. Relative paths are
+//     ambiguous (relative to what?) — being strict surfaces the bug at the
+//     MCP boundary instead of producing different behaviour in different
+//     dispatchers.
 // ---------------------------------------------------------------------------
+
+const MAX_PROMPT_BYTES = 1_000_000; // 1 MB UTF-8 cap
+const MAX_FILES = 256;
+const MAX_PATH_LEN = 4096;
 
 const taskTypeSchema = z.enum(["execute", "plan", "review", "local"]);
 
 const routeHintsSchema = z
   .object({
-    service: z.string().optional().describe("Force a specific service by name."),
+    service: z.string().max(MAX_PATH_LEN).optional().describe("Force a specific service by name."),
     harness: z
       .string()
+      .max(MAX_PATH_LEN)
       .optional()
-      .describe("Restrict to one harness (claude_code | cursor | codex | gemini_cli)."),
+      .describe(
+        "Restrict to one harness id. Built-in: claude_code | cursor | codex | gemini_cli | opencode | copilot. " +
+          "Third-party CLIs registered via YAML use whatever harness id you assigned in config — same field accepts those.",
+      ),
     taskType: taskTypeSchema.optional().describe("execute | plan | review | local"),
     preferLargeContext: z
       .boolean()
       .optional()
-      .describe("Extra boost for Gemini (1M+ token context)."),
+      .describe("Extra boost for Gemini (2M token context window)."),
   })
   .describe("Routing hints passed to the router.");
 
+// `workingDir` validator. Accepts empty (caller wants the dispatcher's
+// default) OR an absolute path. Relative paths are rejected to make the
+// behaviour platform-deterministic — a relative cwd means different things
+// on Windows vs POSIX vs sandboxed contexts. Length capped at MAX_PATH_LEN.
+const workingDirSchema = z
+  .string()
+  .max(MAX_PATH_LEN)
+  .refine((p) => p === "" || path.isAbsolute(p), {
+    message: "workingDir must be an absolute path or empty",
+  })
+  .optional();
+
+const filesSchema = z
+  .array(z.string().max(MAX_PATH_LEN))
+  .max(MAX_FILES)
+  .optional()
+  .describe("Absolute file paths to include as context (max 256 entries).");
+
+const promptSchema = z
+  .string()
+  .max(MAX_PROMPT_BYTES)
+  .describe("The coding task or question (max 1 MB).");
+
 const routeInputShape = {
-  prompt: z.string().describe("The coding task or question."),
-  files: z
-    .array(z.string())
-    .optional()
-    .describe("Absolute file paths to include as context."),
-  workingDir: z
-    .string()
-    .optional()
-    .describe("Working directory for the CLI process."),
+  prompt: promptSchema,
+  files: filesSchema,
+  workingDir: workingDirSchema.describe("Working directory for the CLI process."),
   modelOverride: z
     .string()
+    .max(MAX_PATH_LEN)
     .optional()
     .describe("Force a specific model on the chosen dispatcher."),
   hints: routeHintsSchema.optional(),
 } as const;
 
 const autoInputShape = {
-  prompt: z.string(),
-  files: z.array(z.string()).optional(),
-  workingDir: z.string().optional(),
+  prompt: promptSchema,
+  files: filesSchema,
+  workingDir: workingDirSchema,
   hints: routeHintsSchema.optional(),
 } as const;
 
 const mixtureInputShape = {
-  prompt: z.string(),
-  files: z.array(z.string()).optional(),
-  workingDir: z.string().optional(),
+  prompt: promptSchema,
+  files: filesSchema,
+  workingDir: workingDirSchema,
   hints: routeHintsSchema.optional(),
   services: z
-    .array(z.string())
+    .array(z.string().max(MAX_PATH_LEN))
+    .max(MAX_FILES)
     .optional()
     .describe("Optional subset of service names — defaults to all available."),
 } as const;
@@ -103,6 +147,17 @@ export interface RouteResponse {
   model?: string;
   durationMs?: number;
   tokensUsed?: { input: number; output: number };
+  /**
+   * True when the dispatcher detected rate-limit / quota signals in the
+   * underlying CLI's output (e.g. codex's "You've hit your usage limit",
+   * cursor's "rate limit exceeded", a 429 in the response). When set, the
+   * router's circuit breaker has already been told to back off; surfacing
+   * the flag here lets MCP clients show a clearer "retry later" UX
+   * instead of a generic error.
+   */
+  rateLimited?: boolean;
+  /** Seconds to wait before retrying. Provider-supplied when available. */
+  retryAfter?: number;
   routing?: {
     tier: number;
     quotaScore: number;
@@ -135,7 +190,7 @@ export interface ListedService {
   weight: number;
   cliCapability: number;
   leaderboardModel?: string;
-  cliType: "cli" | "openai_compatible";
+  cliType: "cli" | "openai_compatible" | "generic_cli";
   command?: string;
   maxOutputTokens?: number;
   maxInputTokens?: number;
@@ -288,14 +343,12 @@ async function runRoutedStreaming(
     if (event.type === "completion") finalResult = event.result;
   }
 
-  const result: DispatchResult =
-    finalResult ??
-    ({
-      output: "",
-      service: "none",
-      success: false,
-      error: "Router stream ended without a completion event",
-    } as DispatchResult);
+  const result: DispatchResult = finalResult ?? {
+    output: "",
+    service: "none",
+    success: false,
+    error: "Router stream ended without a completion event",
+  };
 
   const response: RouteResponse = {
     success: result.success,
@@ -305,6 +358,8 @@ async function runRoutedStreaming(
   if (result.error !== undefined) response.error = result.error;
   if (result.durationMs !== undefined) response.durationMs = result.durationMs;
   if (result.tokensUsed !== undefined) response.tokensUsed = result.tokensUsed;
+  if (result.rateLimited) response.rateLimited = true;
+  if (result.retryAfter !== undefined) response.retryAfter = result.retryAfter;
   if (finalDecision) {
     if (finalDecision.model !== undefined) response.model = finalDecision.model;
     response.routing = {
@@ -350,6 +405,8 @@ async function runRoutedBuffered(
   if (result.error !== undefined) response.error = result.error;
   if (result.durationMs !== undefined) response.durationMs = result.durationMs;
   if (result.tokensUsed !== undefined) response.tokensUsed = result.tokensUsed;
+  if (result.rateLimited) response.rateLimited = true;
+  if (result.retryAfter !== undefined) response.retryAfter = result.retryAfter;
   if (decision) {
     if (decision.model !== undefined) response.model = decision.model;
     response.routing = {
@@ -433,7 +490,7 @@ export async function handleCodeMixture(
   deps: ToolDeps,
   input: z.infer<z.ZodObject<typeof mixtureInputShape>>,
   extra?: ToolExtra,
-): Promise<{ results: MixtureItem[] }> {
+): Promise<{ results: MixtureItem[]; error?: string }> {
   return withMcpToolSpan({ "tool.name": "code_mixture" }, async () => {
     await ensureFreshConfig(deps.reloader);
     const state = deps.holder.state;
@@ -455,7 +512,17 @@ export async function handleCodeMixture(
       candidates.push(name);
     }
 
-    if (candidates.length === 0) return { results: [] };
+    if (candidates.length === 0) {
+      // Surface why nothing dispatched — easier for the caller to debug than
+      // an empty array. Common causes: every service circuit-broken, every
+      // service unreachable, or a `services: []` filter that didn't match.
+      return {
+        results: [],
+        error:
+          "No candidate services available for code_mixture — check breaker " +
+          "state via get_quota_status, or relax the `services` filter / `hints.harness`.",
+      };
+    }
 
     const prompt = input.prompt;
     const files = input.files ?? [];
@@ -476,12 +543,7 @@ export async function handleCodeMixture(
         let result: DispatchResult;
         if (progressToken !== undefined) {
           let capturedResult: DispatchResult | null = null;
-          for await (const { event } of state.router.streamTo(
-            svcName,
-            prompt,
-            files,
-            workingDir,
-          )) {
+          for await (const { event } of state.router.streamTo(svcName, prompt, files, workingDir)) {
             await emitProgress(extra, progressToken, counter, event, svcName);
             if (event.type === "completion") capturedResult = event.result;
           }
@@ -518,9 +580,7 @@ export async function handleCodeMixture(
   });
 }
 
-export async function handleQuotaStatus(
-  deps: ToolDeps,
-): Promise<Record<string, unknown>> {
+export async function handleQuotaStatus(deps: ToolDeps): Promise<Record<string, unknown>> {
   await ensureFreshConfig(deps.reloader);
   const state = deps.holder.state;
   const quota = await state.quota.fullStatus();
@@ -536,9 +596,7 @@ export async function handleQuotaStatus(
   return out;
 }
 
-export async function handleListServices(
-  deps: ToolDeps,
-): Promise<{ services: ListedService[] }> {
+export async function handleListServices(deps: ToolDeps): Promise<{ services: ListedService[] }> {
   await ensureFreshConfig(deps.reloader);
   const state = deps.holder.state;
   const breakers = state.router.circuitBreakerStatus();
@@ -583,7 +641,7 @@ export async function handleDashboard(deps: ToolDeps): Promise<string> {
   const breakers = state.router.circuitBreakerStatus();
 
   const lines: string[] = [];
-  lines.push("coding-agent-mcp — status dashboard", "");
+  lines.push("harness-router-mcp — status dashboard", "");
 
   const lbAgeMs = state.leaderboard.cacheAgeMs();
   if (lbAgeMs === null) {
@@ -698,13 +756,13 @@ export async function handleDashboard(deps: ToolDeps): Promise<string> {
 // Setup — writes ~/.claude/CLAUDE.md and hooks.json entry
 // ---------------------------------------------------------------------------
 
-const CLAUDE_MD_START = "<!-- coding-agent-start -->";
-const CLAUDE_MD_END = "<!-- coding-agent-end -->";
+const CLAUDE_MD_START = "<!-- harness-router-start -->";
+const CLAUDE_MD_END = "<!-- harness-router-end -->";
 
 const CLAUDE_MD_BLOCK = `${CLAUDE_MD_START}
-# Coding Router — Global Routing Instructions
+# harness-router-mcp — Routing Instructions
 
-For all coding tasks in any project, route through the coding-agent-mcp tools
+For all coding tasks in any project, route through the harness-router-mcp tools
 instead of responding directly. You are the orchestrator — delegate, then synthesize.
 
 ## When to route
@@ -716,15 +774,26 @@ architecture decisions, refactoring, debugging, or explaining code.
 
 Use \`code_auto\` with a \`task_type\` hint that matches what the task actually is:
 
-| task_type | Use for | Best service |
+| task_type | Use for | Best harness |
 |-----------|---------|--------------|
-| execute | Running tests, applying fixes, autonomous multi-step coding | Codex → Cursor |
-| plan | Architecture, design decisions, "how should we build X" | Claude Code (Opus) |
-| review | Code review, security audit, explain code, refactor suggestions | Claude Code (Opus) |
+| execute | Running tests, applying fixes, autonomous multi-step coding | codex → cursor |
+| plan    | Architecture, design decisions, "how should we build X" | claude_code (Opus) |
+| review  | Code review, security audit, explain code, refactor suggestions | claude_code (Opus) |
+
+## Per-harness routing
+
+When you specifically need one harness's strengths:
+
+- \`code_with_claude\`   — file/Bash/Edit tools, strong on plan & review
+- \`code_with_cursor\`   — codebase indexing, strong on execute in editor flows
+- \`code_with_codex\`    — full-auto execution loop, strongest on execute
+- \`code_with_gemini\`   — 2M-token context, strong on review/plan over large codebases
+- \`code_with_opencode\` — provider-agnostic OSS agent, supports multiple subscriptions per install
+- \`code_with_copilot\`  — GitHub Copilot CLI, GitHub-tooling-aware (gh, repo, PR context)
 
 ## For multiple perspectives
 
-Use \`code_mixture\` when the task benefits from different model opinions:
+Use \`code_mixture\` when the task benefits from different harness opinions:
   \`code_mixture(prompt="<task>", hints={"taskType": "plan"})\`
 
 ## Health check
@@ -776,7 +845,7 @@ export async function handleSetup(
     const sessionStart = Array.isArray(hooks.SessionStart)
       ? (hooks.SessionStart as Array<Record<string, unknown>>)
       : [];
-    const marker = "coding-agent-mcp-session-hook";
+    const marker = "harness-router-mcp-session-hook";
     const alreadyHooked = sessionStart.some((entry) => {
       const hs = entry.hooks;
       return Array.isArray(hs) && hs.some((h: unknown) => JSON.stringify(h).includes(marker));
@@ -789,7 +858,7 @@ export async function handleSetup(
         hooks: [
           {
             type: "command",
-            command: `node -e "/* ${marker} */ console.log('coding-agent-mcp: use code_auto for coding tasks')"`,
+            command: `node -e "/* ${marker} */ console.log('harness-router-mcp: use code_auto for coding tasks')"`,
           },
         ],
       });
@@ -815,6 +884,8 @@ export const TOOL_NAMES = [
   "code_with_cursor",
   "code_with_codex",
   "code_with_gemini",
+  "code_with_opencode",
+  "code_with_copilot",
   "code_auto",
   "code_mixture",
   "get_quota_status",
@@ -846,8 +917,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "Editor-aware with codebase indexing.",
       inputSchema: routeInputShape,
     },
+    // maxFallbacks=1 here matches the other code_with_<harness> tools — when
+    // the caller has named a specific harness, deeper fallback within that
+    // harness's services is rarely what they want. Use code_auto if you
+    // want the router to fall through tiers across harnesses.
     async (args, extra) =>
-      jsonText(await handleCodeWithHarness(deps, "cursor", args, 2, extra as ToolExtra)),
+      jsonText(await handleCodeWithHarness(deps, "cursor", args, 1, extra as ToolExtra)),
   );
 
   server.registerTool(
@@ -874,6 +949,34 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
     },
     async (args, extra) =>
       jsonText(await handleCodeWithHarness(deps, "gemini_cli", args, 1, extra as ToolExtra)),
+  );
+
+  server.registerTool(
+    "code_with_opencode",
+    {
+      title: "Dispatch to OpenCode",
+      description:
+        "Route to the best available OpenCode (opencode harness) service. " +
+        "Provider-agnostic open-source agent — supports multiple subscriptions per install.",
+      inputSchema: routeInputShape,
+    },
+    async (args, extra) =>
+      jsonText(await handleCodeWithHarness(deps, "opencode", args, 1, extra as ToolExtra)),
+  );
+
+  server.registerTool(
+    "code_with_copilot",
+    {
+      title: "Dispatch to GitHub Copilot CLI",
+      description:
+        "Route to the GitHub Copilot CLI (copilot harness) — the standalone " +
+        "@github/copilot agentic CLI, distinct from VS Code's Copilot extension. " +
+        "Uses the Copilot subscription tied to your GitHub account; org policy " +
+        "may restrict CLI access (see https://github.com/settings/copilot).",
+      inputSchema: routeInputShape,
+    },
+    async (args, extra) =>
+      jsonText(await handleCodeWithHarness(deps, "copilot", args, 1, extra as ToolExtra)),
   );
 
   server.registerTool(
@@ -951,9 +1054,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
 // Test convenience — invoke a tool handler by name without going through MCP.
 // ---------------------------------------------------------------------------
 
-export type InvokeResult =
-  | { kind: "json"; data: unknown }
-  | { kind: "text"; data: string };
+export type InvokeResult = { kind: "json"; data: unknown } | { kind: "text"; data: string };
 
 export async function invokeTool(
   name: string,
@@ -967,7 +1068,7 @@ export async function invokeTool(
     }
     case "code_with_cursor": {
       const parsed = z.object(routeInputShape).parse(args);
-      return { kind: "json", data: await handleCodeWithHarness(deps, "cursor", parsed, 2) };
+      return { kind: "json", data: await handleCodeWithHarness(deps, "cursor", parsed, 1) };
     }
     case "code_with_codex": {
       const parsed = z.object(routeInputShape).parse(args);
@@ -976,6 +1077,14 @@ export async function invokeTool(
     case "code_with_gemini": {
       const parsed = z.object(routeInputShape).parse(args);
       return { kind: "json", data: await handleCodeWithHarness(deps, "gemini_cli", parsed, 1) };
+    }
+    case "code_with_opencode": {
+      const parsed = z.object(routeInputShape).parse(args);
+      return { kind: "json", data: await handleCodeWithHarness(deps, "opencode", parsed, 1) };
+    }
+    case "code_with_copilot": {
+      const parsed = z.object(routeInputShape).parse(args);
+      return { kind: "json", data: await handleCodeWithHarness(deps, "copilot", parsed, 1) };
     }
     case "code_auto": {
       const parsed = z.object(autoInputShape).parse(args);

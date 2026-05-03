@@ -7,7 +7,10 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { streamSubprocess, drainSubprocessStream } from "../../src/dispatchers/shared/stream-subprocess.js";
+import {
+  streamSubprocess,
+  drainSubprocessStream,
+} from "../../src/dispatchers/shared/stream-subprocess.js";
 
 const NODE = process.execPath;
 
@@ -142,6 +145,27 @@ describe("streamSubprocess", () => {
     const first = chunkTimestamps[0]!;
     const last = chunkTimestamps[chunkTimestamps.length - 1]!;
     expect(last - first).toBeGreaterThan(100);
+  }, 10_000);
+
+  // stdinInput plumbing — audit pass B: GAP. Production path (real spawn,
+  // not the mocked `runSubprocess`) was untested.
+  it("forwards `stdinInput` to the child's stdin and the child can read it", async () => {
+    // The script reads stdin, prints what it got, then exits. If our
+    // stdinInput plumbing is broken, the child either hangs (stdin never
+    // closes) or sees nothing (stdin was 'ignore').
+    const script = `
+      let buf = '';
+      process.stdin.setEncoding('utf8');
+      process.stdin.on('data', (c) => { buf += c; });
+      process.stdin.on('end', () => {
+        process.stdout.write('GOT:' + buf);
+      });
+    `;
+    const result = await drainSubprocessStream(
+      streamSubprocess(NODE, ["-e", script], { stdinInput: "from-stdin" }),
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("GOT:from-stdin");
   }, 10_000);
 });
 

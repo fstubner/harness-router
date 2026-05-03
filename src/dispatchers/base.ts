@@ -19,6 +19,18 @@ export interface DispatchOpts {
   timeoutMs?: number;
 }
 
+/**
+ * Optional construction-time inputs for CLI dispatchers.
+ *
+ * `cliPath` carries the result of `which(command)` performed by the factory.
+ * - `string` — CLI is on PATH at the given absolute path; `isAvailable()` returns true.
+ * - `null`   — CLI is not on PATH; `isAvailable()` returns false so the router skips it.
+ * - undefined (omitted) — back-compat path used by tests; treated as available.
+ */
+export interface DispatcherInitOpts {
+  cliPath?: string | null;
+}
+
 export interface Dispatcher {
   readonly id: string;
   dispatch(
@@ -100,8 +112,11 @@ export async function drainDispatcherStream(
       case "error":
         terminalError = event.error;
         break;
-      // tool_use / thinking are informational; they don't affect the drained result.
-      default:
+      case "tool_use":
+      case "thinking":
+        // Informational — don't affect the drained result. Listed
+        // explicitly so future DispatcherEvent variants trigger an
+        // exhaustiveness error here rather than silently falling through.
         break;
     }
   }

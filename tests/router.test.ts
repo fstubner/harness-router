@@ -48,7 +48,11 @@ vi.mock("../src/circuit-breaker.js", () => {
 
 vi.mock("../src/quota.js", () => {
   class QuotaCache {
-    private scores = new Map<string, number>();
+    private readonly scores = new Map<string, number>();
+    // Accept the real constructor's signature so the mocked class matches
+    // the imported type — tests can call `new QuotaCache(dispatchers?, opts?)`
+    // (or no args at all).
+    constructor(_dispatchers?: unknown, _opts?: unknown) {}
     setScore(service: string, score: number): void {
       this.scores.set(service, score);
     }
@@ -64,8 +68,8 @@ vi.mock("../src/quota.js", () => {
 
 vi.mock("../src/leaderboard.js", () => {
   class LeaderboardCache {
-    private models = new Map<string, { qualityScore: number; elo: number | null }>();
-    private tierOverrides = new Map<string, number>();
+    private readonly models = new Map<string, { qualityScore: number; elo: number | null }>();
+    private readonly tierOverrides = new Map<string, number>();
     setModel(model: string, qualityScore: number, elo: number | null = null): void {
       this.models.set(model, { qualityScore, elo });
     }
@@ -95,8 +99,10 @@ vi.mock("../src/leaderboard.js", () => {
 import { Router } from "../src/router.js";
 import { QuotaCache } from "../src/quota.js";
 import { LeaderboardCache } from "../src/leaderboard.js";
-import { CircuitBreaker } from "../src/circuit-breaker.js";
-import type { DispatchResult, RouterConfig, ServiceConfig, TaskType } from "../src/types.js";
+// CircuitBreaker is mocked above; the import is kept for the type but
+// the value isn't read directly. Same for TaskType — it's used by the
+// mocked module's signatures and the harness contract test.
+import type { DispatchResult, RouterConfig, ServiceConfig } from "../src/types.js";
 import type { Dispatcher } from "../src/dispatchers/base.js";
 
 // ---- Test helpers --------------------------------------------------------
@@ -161,6 +167,13 @@ class StubDispatcher implements Dispatcher {
     throw new Error("not implemented for tests");
   }
 
+  // Stream is unused in router.pickService / router.dispatch test paths but
+  // must exist to satisfy the Dispatcher interface. If a future test does
+  // route through the streaming path with this stub, it'll fail loudly here.
+  async *stream(): AsyncIterable<never> {
+    throw new Error("StubDispatcher.stream() is not implemented");
+  }
+
   isAvailable(): boolean {
     return this.available;
   }
@@ -173,7 +186,7 @@ describe("Router.pickService", () => {
   let leaderboard: LeaderboardCache;
 
   beforeEach(() => {
-    quota = new QuotaCache();
+    quota = new QuotaCache({});
     leaderboard = new LeaderboardCache();
   });
 
@@ -271,6 +284,27 @@ describe("Router.pickService", () => {
     expect(decision?.tier).toBe(2);
   });
 
+  it("`reason` text uses the FILTERED-harness min tier, not the global min (audit B: WEAK-3)", async () => {
+    // A claude_code-only filter on a config where the only claude_code
+    // service is tier 2 should produce `tier 2 best (...)`, NOT
+    // `tier 2 fallback (all tier 1 services exhausted)`. The "tier 1
+    // services" in question never matched the filter — they belong to a
+    // different harness. The previous code computed minConfiguredTier
+    // across ALL enabled services, ignoring the filter, and emitted the
+    // wrong reason.
+    const claude2 = makeService({ name: "claude_only", harness: "claude_code", tier: 2 });
+    const codex1 = makeService({ name: "codex_only", harness: "codex", tier: 1 });
+    const dispatchers: Record<string, Dispatcher> = {
+      claude_only: new StubDispatcher("claude_only"),
+      codex_only: new StubDispatcher("codex_only"),
+    };
+    const router = new Router(makeConfig([claude2, codex1]), quota, dispatchers, leaderboard);
+    const decision = await router.pickService({ hints: { harness: "claude_code" } });
+    expect(decision?.service).toBe("claude_only");
+    expect(decision?.reason).toMatch(/tier 2 best/);
+    expect(decision?.reason).not.toMatch(/fallback/);
+  });
+
   it("applies +0.3 prefer_large_context boost to gemini harnesses", async () => {
     const nongemini = makeService({
       name: "alpha",
@@ -286,12 +320,7 @@ describe("Router.pickService", () => {
       alpha: new StubDispatcher("alpha"),
       gemini_cli: new StubDispatcher("gemini_cli"),
     };
-    const router = new Router(
-      makeConfig([nongemini, gemini]),
-      quota,
-      dispatchers,
-      leaderboard,
-    );
+    const router = new Router(makeConfig([nongemini, gemini]), quota, dispatchers, leaderboard);
     const withoutBoost = await router.pickService({ hints: { preferLargeContext: false } });
     const withBoost = await router.pickService({ hints: { preferLargeContext: true } });
     // Without the boost they tie and alpha wins (iteration order). With the boost gemini wins.
@@ -344,19 +373,14 @@ describe("Router.route", () => {
   let leaderboard: LeaderboardCache;
 
   beforeEach(() => {
-    quota = new QuotaCache();
+    quota = new QuotaCache({});
     leaderboard = new LeaderboardCache();
   });
 
   it("returns the successful result on first attempt", async () => {
     const a = makeService({ name: "alpha", tier: 1 });
     const dispatcher = new StubDispatcher("alpha");
-    const router = new Router(
-      makeConfig([a]),
-      quota,
-      { alpha: dispatcher },
-      leaderboard,
-    );
+    const router = new Router(makeConfig([a]), quota, { alpha: dispatcher }, leaderboard);
     const { result, decision } = await router.route("hi", [], "/tmp");
     expect(result.success).toBe(true);
     expect(result.output).toBe("ok from alpha");
@@ -430,7 +454,7 @@ describe("Router.routeTo", () => {
   let leaderboard: LeaderboardCache;
 
   beforeEach(() => {
-    quota = new QuotaCache();
+    quota = new QuotaCache({});
     leaderboard = new LeaderboardCache();
   });
 

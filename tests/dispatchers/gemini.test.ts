@@ -8,31 +8,20 @@ import type {
 } from "../../src/dispatchers/shared/subprocess.js";
 import type { ServiceConfig } from "../../src/types.js";
 
+// Dispatchers no longer call resolveCliCommand directly — Windows .cmd
+// quoting now lives in safeSpawn (covered by tests/safe-spawn.test.ts).
 vi.mock("../../src/dispatchers/shared/subprocess.js", () => ({
   runSubprocess: vi.fn(),
-}));
-vi.mock("../../src/dispatchers/shared/windows-cmd.js", () => ({
-  resolveCliCommand: vi.fn(),
 }));
 vi.mock("which", () => ({
   default: vi.fn(),
 }));
 
-const { runSubprocess } = await import(
-  "../../src/dispatchers/shared/subprocess.js"
-);
-const { resolveCliCommand } = await import(
-  "../../src/dispatchers/shared/windows-cmd.js"
-);
+const { runSubprocess } = await import("../../src/dispatchers/shared/subprocess.js");
 const { default: which } = await import("which");
-const { GeminiDispatcher, _geminiLockIdle } = await import(
-  "../../src/dispatchers/gemini.js"
-);
+const { GeminiDispatcher, _geminiLockIdle } = await import("../../src/dispatchers/gemini.js");
 
 const runSubprocessMock = runSubprocess as unknown as ReturnType<typeof vi.fn>;
-const resolveCliCommandMock = resolveCliCommand as unknown as ReturnType<
-  typeof vi.fn
->;
 const whichMock = which as unknown as ReturnType<typeof vi.fn>;
 
 function ok(overrides: Partial<SubprocessResult> = {}): SubprocessResult {
@@ -62,10 +51,6 @@ function captureSubprocessCall(index: number): {
 
 function mockFound(commandPath = "/usr/local/bin/gemini"): void {
   whichMock.mockResolvedValue(commandPath);
-  resolveCliCommandMock.mockResolvedValue({
-    command: commandPath,
-    prefixArgs: [],
-  });
 }
 
 function baseSvc(overrides: Partial<ServiceConfig> = {}): ServiceConfig {
@@ -90,7 +75,6 @@ let tempSettingsPath: string;
 
 beforeEach(async () => {
   runSubprocessMock.mockReset();
-  resolveCliCommandMock.mockReset();
   whichMock.mockReset();
 
   // Drain the lock chain so prior tests' patches don't linger.
@@ -124,6 +108,18 @@ describe("GeminiDispatcher", () => {
     expect(runSubprocessMock).not.toHaveBeenCalled();
   });
 
+  it("passes the bare command name (`gemini`) to runSubprocess", async () => {
+    mockFound();
+    runSubprocessMock.mockResolvedValue(ok({ stdout: "ok" }));
+
+    const d = new GeminiDispatcher(baseSvc());
+    await d.dispatch("hi", [], "");
+
+    const { command } = captureSubprocessCall(0);
+    // Bare-name contract — safeSpawn handles which() + .cmd shim quoting.
+    expect(command).toBe("gemini");
+  });
+
   it("parses the response field from JSON output", async () => {
     mockFound();
     runSubprocessMock.mockResolvedValue(
@@ -145,9 +141,7 @@ describe("GeminiDispatcher", () => {
 
   it("passes --model <override> through to the subprocess", async () => {
     mockFound();
-    runSubprocessMock.mockResolvedValue(
-      ok({ stdout: JSON.stringify({ response: "ok" }) }),
-    );
+    runSubprocessMock.mockResolvedValue(ok({ stdout: JSON.stringify({ response: "ok" }) }));
 
     const d = new GeminiDispatcher();
     await d.dispatch("go", [], "", { modelOverride: "gemini-3-pro" });
@@ -160,9 +154,7 @@ describe("GeminiDispatcher", () => {
 
   it("uses the service's configured model when no override is given", async () => {
     mockFound();
-    runSubprocessMock.mockResolvedValue(
-      ok({ stdout: JSON.stringify({ response: "ok" }) }),
-    );
+    runSubprocessMock.mockResolvedValue(ok({ stdout: JSON.stringify({ response: "ok" }) }));
 
     const d = new GeminiDispatcher(baseSvc({ model: "gemini-2.5-flash" }));
     await d.dispatch("go", [], "");
@@ -175,9 +167,7 @@ describe("GeminiDispatcher", () => {
 
   it("passes each file via --file flag", async () => {
     mockFound();
-    runSubprocessMock.mockResolvedValue(
-      ok({ stdout: JSON.stringify({ response: "ok" }) }),
-    );
+    runSubprocessMock.mockResolvedValue(ok({ stdout: JSON.stringify({ response: "ok" }) }));
 
     const d = new GeminiDispatcher();
     await d.dispatch("go", ["/a.ts", "/b.ts"], "");
@@ -195,9 +185,7 @@ describe("GeminiDispatcher", () => {
   it("forwards GEMINI_API_KEY from process.env", async () => {
     process.env["GEMINI_API_KEY"] = "gemini-key-abc";
     mockFound();
-    runSubprocessMock.mockResolvedValue(
-      ok({ stdout: JSON.stringify({ response: "ok" }) }),
-    );
+    runSubprocessMock.mockResolvedValue(ok({ stdout: JSON.stringify({ response: "ok" }) }));
 
     const d = new GeminiDispatcher();
     await d.dispatch("go", [], "");
@@ -270,9 +258,7 @@ describe("GeminiDispatcher", () => {
         generateContentConfig?: { thinkingLevel?: string };
       };
     };
-    expect(
-      parsed.modelConfigs?.generateContentConfig?.thinkingLevel,
-    ).toBe("HIGH");
+    expect(parsed.modelConfigs?.generateContentConfig?.thinkingLevel).toBe("HIGH");
   });
 
   it("serialises concurrent dispatches on the module-level lock (no interleaving)", async () => {

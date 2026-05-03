@@ -56,7 +56,7 @@ function fixtureState(overrides: Partial<DashboardState> = {}): DashboardState {
 describe("renderDashboard", () => {
   it("renders a plain-text snapshot", () => {
     const output = renderDashboard(fixtureState());
-    expect(output).toContain("coding-agent-mcp — live dashboard");
+    expect(output).toContain("harness-router-mcp — live dashboard");
     expect(output).toContain("CLAUDE_CODE");
     expect(output).toContain("LOCAL_LLM");
     expect(output).toContain("Tier 1 — Frontier");

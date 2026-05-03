@@ -1,5 +1,5 @@
 /**
- * Cursor headless CLI dispatcher for coding-agent-mcp.
+ * Cursor headless CLI dispatcher for harness-router-mcp.
  *
  * Dispatch:  agent -p --trust --workspace <dir> --output-format json "<prompt>"
  *                  [--model <override>]
@@ -22,10 +22,10 @@
 
 import os from "node:os";
 import which from "which";
-import type { DispatchResult, DispatcherEvent, QuotaInfo } from "../types.js";
-import { BaseDispatcher, type DispatchOpts } from "./base.js";
+import type { DispatchResult, DispatcherEvent, QuotaInfo, ServiceConfig } from "../types.js";
+import { BaseDispatcher, type DispatchOpts, type DispatcherInitOpts } from "./base.js";
+import { detectRateLimitInText } from "./shared/rate-limit-text.js";
 import { streamSubprocess } from "./shared/stream-subprocess.js";
-import { resolveCliCommand } from "./shared/windows-cmd.js";
 
 const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes
 
@@ -43,9 +43,15 @@ interface CursorJsonResult {
 
 export class CursorDispatcher extends BaseDispatcher {
   readonly id = "cursor";
+  private readonly available: boolean;
+
+  constructor(_svc?: ServiceConfig, opts: DispatcherInitOpts = {}) {
+    super();
+    this.available = opts.cliPath !== null;
+  }
 
   isAvailable(): boolean {
-    return true;
+    return this.available;
   }
 
   async checkQuota(): Promise<QuotaInfo> {
@@ -80,7 +86,6 @@ export class CursorDispatcher extends BaseDispatcher {
       };
       return;
     }
-    const resolved = await resolveCliCommand("agent");
 
     let fullPrompt = prompt;
     if (files.length > 0) {
@@ -88,10 +93,14 @@ export class CursorDispatcher extends BaseDispatcher {
       fullPrompt = `${prompt}\n\nFocus on these files:\n${fileList}`;
     }
 
+    // When no workingDir is supplied, fall back to $HOME — matches Python
+    // reference. Note: this gives the agent read/write access across the
+    // entire home directory, so callers should pass an explicit workingDir
+    // for any task that should be scoped to a specific repo or sandbox.
+    // See README "Trust model" section for details.
     const effectiveDir = workingDir || os.homedir();
 
     const args: string[] = [
-      ...resolved.prefixArgs,
       "-p",
       "--trust",
       "--workspace",
@@ -123,7 +132,7 @@ export class CursorDispatcher extends BaseDispatcher {
     let durationMs = 0;
     let timedOut = false;
 
-    for await (const evt of streamSubprocess(resolved.command, args, subOpts)) {
+    for await (const evt of streamSubprocess("agent", args, subOpts)) {
       if ("stream" in evt) {
         if (evt.stream === "stdout") {
           stdoutBuf.push(evt.chunk);
@@ -171,11 +180,10 @@ export class CursorDispatcher extends BaseDispatcher {
       return;
     }
 
-    // Error path — detect rate limit in combined output.
+    // Error path — detect rate limit in combined output via the shared helper.
     const combined = `${stdout}\n${stderr}`;
-    const { rateLimited, retryAfter } = detectRateLimit(combined);
-    const errorDetail =
-      stderr.trim() || stdout.trim() || `Exit code ${exitCode}`;
+    const { rateLimited, retryAfter } = detectRateLimitInText(combined);
+    const errorDetail = stderr.trim() || stdout.trim() || `Exit code ${exitCode}`;
 
     const result: DispatchResult = {
       output: parsedText ?? errorDetail,
@@ -224,9 +232,7 @@ function tryParseJsonObj(s: string): ParsedCursorOutput | null {
   const obj = data as CursorJsonResult;
   const textCandidate = obj.result ?? obj.output ?? obj.text;
   const text =
-    typeof textCandidate === "string" && textCandidate.length > 0
-      ? textCandidate.trim()
-      : null;
+    typeof textCandidate === "string" && textCandidate.length > 0 ? textCandidate.trim() : null;
 
   const parsed: ParsedCursorOutput = { text };
 
@@ -239,26 +245,4 @@ function tryParseJsonObj(s: string): ParsedCursorOutput | null {
   }
 
   return parsed;
-}
-
-function detectRateLimit(text: string): {
-  rateLimited: boolean;
-  retryAfter: number | null;
-} {
-  const lowered = text.toLowerCase();
-  const flagged =
-    lowered.includes("rate limit") ||
-    lowered.includes("too many requests") ||
-    lowered.includes("quota exceeded") ||
-    lowered.includes("ratelimiterror") ||
-    text.includes("429");
-
-  if (!flagged) return { rateLimited: false, retryAfter: null };
-
-  const m = /retry[_\s-]after[:\s]+(\d+(?:\.\d+)?)/i.exec(text);
-  const retryAfter = m?.[1] ? Number.parseFloat(m[1]) : null;
-  return {
-    rateLimited: true,
-    retryAfter: retryAfter !== null && Number.isFinite(retryAfter) ? retryAfter : null,
-  };
 }

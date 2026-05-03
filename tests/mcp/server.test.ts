@@ -18,16 +18,14 @@ import { Router } from "../../src/router.js";
 import { QuotaCache } from "../../src/quota.js";
 import { LeaderboardCache } from "../../src/leaderboard.js";
 import type { Dispatcher } from "../../src/dispatchers/base.js";
-import type {
-  DispatchResult,
-  QuotaInfo,
-  RouterConfig,
-  ServiceConfig,
-} from "../../src/types.js";
+import type { DispatchResult, QuotaInfo, RouterConfig, ServiceConfig } from "../../src/types.js";
 
 class StubDispatcher implements Dispatcher {
   readonly id: string;
-  constructor(id: string, private readonly reply: string) {
+  constructor(
+    id: string,
+    private readonly reply: string,
+  ) {
     this.id = id;
   }
   async dispatch(): Promise<DispatchResult> {
@@ -35,6 +33,9 @@ class StubDispatcher implements Dispatcher {
   }
   async checkQuota(): Promise<QuotaInfo> {
     return { service: this.id, source: "unknown" };
+  }
+  async *stream(): AsyncIterable<never> {
+    throw new Error("StubDispatcher.stream() is not implemented");
   }
   isAvailable(): boolean {
     return true;
@@ -61,9 +62,9 @@ function makeSvc(name: string, harness: string): ServiceConfig {
 
 function stubLeaderboard(): LeaderboardCache {
   const lb = new LeaderboardCache();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   (lb as any).fetchedAt = Date.now();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   (lb as any).data = { "a-model": 1400, "b-model": 1300 };
   return lb;
 }
@@ -93,17 +94,14 @@ async function startLinked(): Promise<{
   close: () => Promise<void>;
 }> {
   const server = new McpServer(
-    { name: "coding-agent-mcp-test", version: "test" },
+    { name: "harness-router-mcp-test", version: "test" },
     { instructions: "test server" },
   );
   const holder = new RuntimeHolder(buildState());
   registerTools(server, { holder });
 
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();
-  const client = new Client(
-    { name: "test-client", version: "test" },
-    { capabilities: {} },
-  );
+  const client = new Client({ name: "test-client", version: "test" }, { capabilities: {} });
 
   await server.connect(serverT);
   await client.connect(clientT);
@@ -119,7 +117,7 @@ async function startLinked(): Promise<{
 }
 
 describe("MCP server — registration", () => {
-  it("registers all 10 tools via McpServer.registerTool", async () => {
+  it("registers all 12 tools via McpServer.registerTool", async () => {
     const { client, close } = await startLinked();
     try {
       const resp = await client.listTools();
@@ -192,7 +190,7 @@ describe("MCP server — registration", () => {
       });
       const content = resp.content as Array<{ type: string; text: string }>;
       expect(content[0]!.type).toBe("text");
-      expect(content[0]!.text).toContain("coding-agent-mcp");
+      expect(content[0]!.text).toContain("harness-router-mcp");
     } finally {
       await close();
     }

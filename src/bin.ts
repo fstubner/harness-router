@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 /**
- * coding-agent-mcp — CLI entrypoint.
+ * harness-router-mcp — CLI entrypoint.
  *
  * Usage:
- *   coding-agent-mcp route "<prompt>"        Pick a service and dispatch once.
- *   coding-agent-mcp list-services           Show enabled services.
- *   coding-agent-mcp dashboard               Show quota + breaker status.
- *   coding-agent-mcp dashboard --watch       Re-render every <interval> (default 1s).
- *   coding-agent-mcp mcp                     Start the MCP server on stdio.
- *   coding-agent-mcp mcp --http <port>       Start the MCP server over HTTP.
+ *   harness-router-mcp route "<prompt>"        Pick a service and dispatch once.
+ *   harness-router-mcp list-services           Show enabled services.
+ *   harness-router-mcp dashboard               Show quota + breaker status.
+ *   harness-router-mcp dashboard --watch       Re-render every <interval> (default 1s).
+ *   harness-router-mcp mcp                     Start the MCP server on stdio.
+ *   harness-router-mcp mcp --http <port>       Start the MCP server over HTTP.
  *
  * Options (apply to all subcommands):
- *   --config <path>   Path to config.yaml (default: auto-detect).
+ *   --config <path>   Path to config.yaml. Falls back to $HARNESS_ROUTER_CONFIG,
+ *                     then auto-detect.
  *   --interval <ms>   Dashboard refresh interval in ms (default: 1000).
  *
  * R3: `route` now consumes Router.stream so stdout chunks print live as the
@@ -21,6 +22,7 @@
 
 import { parseArgs } from "node:util";
 import { Router } from "./router.js";
+import { VERSION } from "./version.js";
 import { loadConfig } from "./config.js";
 import { QuotaCache } from "./quota.js";
 import { LeaderboardCache } from "./leaderboard.js";
@@ -28,6 +30,13 @@ import { buildDispatchers } from "./mcp/dispatcher-factory.js";
 import { startMcpHttpServer, startMcpServer } from "./mcp/server.js";
 import { initObservability } from "./observability/index.js";
 import { renderDashboard, type DashboardState, type RecentEvent } from "./dashboard/live.js";
+import {
+  HARNESS_SPECS,
+  onboard,
+  renderReport,
+  type HarnessId,
+  type OnboardOptions,
+} from "./onboarding.js";
 
 // ---------------------------------------------------------------------------
 // Commands (R1 + R3 streaming)
@@ -38,7 +47,7 @@ async function cmdRoute(prompt: string, configPath: string | undefined): Promise
   const dispatchers = await buildDispatchers(config);
   if (Object.keys(dispatchers).length === 0) {
     process.stderr.write(
-      "No dispatchers available. Install at least one CLI (claude, agent, codex, gemini) " +
+      "No dispatchers available. Install at least one CLI (claude, codex, gemini, agent, opencode) " +
         "and try again, or point --config at a YAML with an explicit services block.\n",
     );
     return 1;
@@ -209,6 +218,32 @@ async function cmdDashboard(
 }
 
 // ---------------------------------------------------------------------------
+// Command — init (light onboarding)
+// ---------------------------------------------------------------------------
+
+async function cmdInit(
+  configPath: string | undefined,
+  installFlag: boolean,
+  noVerify: boolean,
+  harnessFilter: HarnessId | undefined,
+): Promise<number> {
+  const opts: OnboardOptions = {
+    install: installFlag,
+    noVerify,
+  };
+  if (configPath !== undefined) opts.configPath = configPath;
+  if (harnessFilter !== undefined) opts.harnesses = [harnessFilter];
+
+  const reports = await onboard(opts);
+  const colors = Boolean(process.stdout.isTTY);
+  process.stdout.write(renderReport(reports, colors) + "\n");
+
+  // Exit 0 if every targeted harness is ready, 1 otherwise — useful for
+  // shell scripts ("&& open editor", etc.).
+  return reports.every((r) => r.ready) ? 0 : 1;
+}
+
+// ---------------------------------------------------------------------------
 // Commands (R2 — MCP server)
 // ---------------------------------------------------------------------------
 
@@ -220,9 +255,7 @@ async function cmdMcp(
     const buildOpts: { configPath?: string } = {};
     if (configPath !== undefined) buildOpts.configPath = configPath;
     const handle = await startMcpHttpServer({ ...buildOpts, port: httpPort });
-    process.stderr.write(
-      `coding-agent-mcp listening on http://localhost:${handle.port}/mcp\n`,
-    );
+    process.stderr.write(`harness-router-mcp listening on http://localhost:${handle.port}/mcp\n`);
     const shutdown = async (): Promise<void> => {
       try {
         await handle.close();
@@ -260,21 +293,30 @@ async function cmdMcp(
 // Entry point
 // ---------------------------------------------------------------------------
 
+function printVersion(): void {
+  process.stdout.write(`harness-router-mcp ${VERSION}\n`);
+}
+
 function printUsage(): void {
   process.stdout.write(
     [
-      "coding-agent-mcp CLI",
+      "harness-router-mcp — route coding tasks across AI CLI harnesses",
       "",
       "Usage:",
-      '  coding-agent-mcp route "<prompt>"   Pick a service and dispatch (live streaming).',
-      "  coding-agent-mcp list-services      Show enabled services.",
-      "  coding-agent-mcp dashboard          Show quota + breaker status (one-shot).",
-      "  coding-agent-mcp dashboard --watch  Re-render every --interval ms.",
-      "  coding-agent-mcp mcp                Start the MCP server (stdio).",
-      "  coding-agent-mcp mcp --http <port>  Start the MCP server (HTTP).",
+      "  harness-router-mcp init                 Onboarding stack check (installed/verified per harness).",
+      "  harness-router-mcp init --install       Try `npm install -g` for any missing/upgradable harness.",
+      "  harness-router-mcp init --harness <id>  Limit to one harness (claude_code|codex|cursor|gemini_cli|opencode|copilot).",
+      "  harness-router-mcp init --no-verify     Skip the live ~5-token dispatch probe.",
+      '  harness-router-mcp route "<prompt>"     Pick a service and dispatch (live streaming).',
+      "  harness-router-mcp list-services        Show enabled services.",
+      "  harness-router-mcp dashboard            Show quota + breaker status (one-shot).",
+      "  harness-router-mcp dashboard --watch    Re-render every --interval ms.",
+      "  harness-router-mcp mcp                  Start the MCP server (stdio).",
+      "  harness-router-mcp mcp --http <port>    Start the MCP server (HTTP).",
       "",
       "Options:",
-      "  --config <path>   Path to config.yaml (default: auto-detect)",
+      "  --config <path>   Path to config.yaml. Falls back to $HARNESS_ROUTER_CONFIG,",
+      "                    then auto-detects installed CLIs on PATH.",
       "  --interval <ms>   Dashboard refresh interval (default 1000).",
       "",
     ].join("\n"),
@@ -288,13 +330,21 @@ export async function main(argv: string[]): Promise<number> {
       config: { type: "string" },
       http: { type: "string" },
       help: { type: "boolean", short: "h" },
+      version: { type: "boolean", short: "v" },
       watch: { type: "boolean" },
       interval: { type: "string" },
+      install: { type: "boolean" },
+      "no-verify": { type: "boolean" },
+      harness: { type: "string" },
     },
     allowPositionals: true,
     strict: false,
   });
 
+  if (values.version) {
+    printVersion();
+    return 0;
+  }
   if (values.help || positionals.length === 0) {
     printUsage();
     return values.help ? 0 : 1;
@@ -306,7 +356,10 @@ export async function main(argv: string[]): Promise<number> {
   await initObservability();
 
   const [command, ...rest] = positionals;
-  const configPath = values.config as string | undefined;
+  // Resolve config path: explicit --config wins, else $HARNESS_ROUTER_CONFIG,
+  // else loadConfig() auto-detects.
+  const configPath =
+    (values.config as string | undefined) ?? process.env.HARNESS_ROUTER_CONFIG ?? undefined;
 
   switch (command) {
     case "route": {
@@ -316,6 +369,23 @@ export async function main(argv: string[]): Promise<number> {
         return 1;
       }
       return cmdRoute(prompt, configPath);
+    }
+    case "init": {
+      const installFlag = Boolean(values.install);
+      const noVerify = Boolean(values["no-verify"]);
+      const harnessArg = values.harness as string | undefined;
+      let harnessFilter: HarnessId | undefined;
+      if (harnessArg !== undefined) {
+        const known = HARNESS_SPECS.map((s) => s.harness);
+        if (!known.includes(harnessArg)) {
+          process.stderr.write(
+            `init --harness: unknown harness "${harnessArg}". Expected one of: ${known.join(", ")}\n`,
+          );
+          return 1;
+        }
+        harnessFilter = harnessArg;
+      }
+      return cmdInit(configPath, installFlag, noVerify, harnessFilter);
     }
     case "list-services":
       return cmdListServices(configPath);

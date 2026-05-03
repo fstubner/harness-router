@@ -1,12 +1,12 @@
 /**
- * Span helpers for coding-agent-mcp.
+ * Span helpers for harness-router-mcp.
  *
  * Thin wrappers around `@opentelemetry/api` that encapsulate the three span
  * types this project emits:
  *
- *   coding-agent-mcp.dispatcher.*   — per-dispatch and per-stream invocations
- *   coding-agent-mcp.router.*       — routing decisions and route() calls
- *   coding-agent-mcp.mcp.tool       — MCP tool invocations
+ *   harness-router-mcp.dispatcher.*   — per-dispatch and per-stream invocations
+ *   harness-router-mcp.router.*       — routing decisions and route() calls
+ *   harness-router-mcp.mcp.tool       — MCP tool invocations
  *
  * Each helper takes a name, an attribute bag, and an async function. The
  * helper sets standard attributes, records exceptions, sets status, and
@@ -18,8 +18,10 @@
 
 import { SpanStatusCode, trace, type Span, type Attributes } from "@opentelemetry/api";
 
-const TRACER_NAME = "coding-agent-mcp";
-const TRACER_VERSION = "1.0.0-alpha.0";
+import { VERSION } from "../version.js";
+
+const TRACER_NAME = "harness-router-mcp";
+const TRACER_VERSION = VERSION;
 
 export interface SpanAttrs {
   [key: string]: string | number | boolean | undefined;
@@ -89,7 +91,7 @@ export async function withDispatcherSpan<T>(
   attrs: DispatcherSpanAttrs,
   fn: (span: Span) => Promise<T>,
 ): Promise<T> {
-  return withSpan(`coding-agent-mcp.dispatcher.${op}`, attrs, fn);
+  return withSpan(`harness-router-mcp.dispatcher.${op}`, attrs, fn);
 }
 
 // ---------------------------------------------------------------------------
@@ -109,7 +111,7 @@ export async function withRouterSpan<T>(
   fn: (span: Span) => Promise<T>,
 ): Promise<T> {
   const { "router.op": op, ...rest } = attrs;
-  return withSpan(`coding-agent-mcp.router.${op}`, { ...rest, "router.op": op }, fn);
+  return withSpan(`harness-router-mcp.router.${op}`, { ...rest, "router.op": op }, fn);
 }
 
 // ---------------------------------------------------------------------------
@@ -126,5 +128,5 @@ export async function withMcpToolSpan<T>(
   attrs: McpToolSpanAttrs,
   fn: (span: Span) => Promise<T>,
 ): Promise<T> {
-  return withSpan("coding-agent-mcp.mcp.tool", attrs, fn);
+  return withSpan("harness-router-mcp.mcp.tool", attrs, fn);
 }
