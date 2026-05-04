@@ -36,6 +36,12 @@ import {
   type HarnessId,
   type OnboardOptions,
 } from "./onboarding.js";
+import {
+  INSTALL_TARGETS,
+  defaultEntry,
+  type InstallTarget,
+  type McpServerEntry,
+} from "./install/targets.js";
 
 // ---------------------------------------------------------------------------
 // Commands (R1 + R3 streaming)
@@ -292,6 +298,104 @@ function printVersion(): void {
   process.stdout.write(`harness-router-mcp ${VERSION}\n`);
 }
 
+// ---------------------------------------------------------------------------
+// Command — install (write MCP-host configs)
+// ---------------------------------------------------------------------------
+
+interface InstallCmdOpts {
+  /** Restrict to one host id (`claude-desktop` | `cursor` | `codex`). */
+  target?: string;
+  /** Print the snippet instead of writing. Implies dry-run. */
+  print?: boolean;
+  /** Remove our entry from each host instead of installing. */
+  uninstall?: boolean;
+  /** Override the entry name (default: `harness-router`). */
+  name?: string;
+}
+
+function selectTargets(targetId: string | undefined): InstallTarget[] {
+  if (!targetId) return INSTALL_TARGETS.slice();
+  const found = INSTALL_TARGETS.find((t) => t.id === targetId);
+  if (!found) {
+    process.stderr.write(
+      `install --target: unknown host "${targetId}". Expected one of: ` +
+        `${INSTALL_TARGETS.map((t) => t.id).join(", ")}\n`,
+    );
+    return [];
+  }
+  return [found];
+}
+
+async function cmdInstall(opts: InstallCmdOpts): Promise<number> {
+  const targets = selectTargets(opts.target);
+  if (targets.length === 0) return 1;
+
+  const entry: McpServerEntry = {
+    ...defaultEntry(),
+    ...(opts.name ? { name: opts.name } : {}),
+  };
+
+  if (opts.print) {
+    for (const t of targets) {
+      process.stdout.write(`# ${t.displayName}\n${t.printSnippet(entry)}\n\n`);
+    }
+    return 0;
+  }
+
+  // Detect which hosts are present on this system. Skip + log when a host
+  // isn't installed rather than failing the whole batch.
+  const present = targets.filter((t) => t.configPath() !== null);
+  const missing = targets.filter((t) => t.configPath() === null);
+
+  if (present.length === 0) {
+    process.stderr.write(
+      "No supported MCP hosts detected on this machine. Looked for:\n" +
+        targets.map((t) => `  - ${t.displayName} (${t.id})`).join("\n") +
+        "\nIf one of these is installed in a non-default location, configure it manually using\n" +
+        "`harness-router-mcp install --target <id> --print` and paste the snippet into the host's config.\n",
+    );
+    return 1;
+  }
+
+  for (const t of missing) {
+    process.stdout.write(`  ─ ${t.displayName} not detected, skipping\n`);
+  }
+
+  let allOk = true;
+  const verb = opts.uninstall ? "Uninstalling" : "Installing";
+  process.stdout.write(
+    `${verb} ${entry.name} into ${present.length} host${present.length === 1 ? "" : "s"}…\n`,
+  );
+  for (const t of present) {
+    const action = opts.uninstall ? t.uninstall(entry.name) : t.install(entry);
+    const result = await action;
+    if (!result.ok) {
+      allOk = false;
+      process.stdout.write(`  ✗ ${t.displayName} → ${result.error ?? "unknown error"}\n`);
+      continue;
+    }
+    const where = result.path ? ` (${result.path})` : "";
+    if (opts.uninstall) {
+      const tag = result.replaced ? "removed" : "not present";
+      process.stdout.write(`  ✓ ${t.displayName}: ${tag}${where}\n`);
+    } else if (result.alreadyPresent) {
+      process.stdout.write(`  ─ ${t.displayName}: already up to date${where}\n`);
+    } else if (result.replaced) {
+      process.stdout.write(`  ✓ ${t.displayName}: updated entry${where}\n`);
+    } else {
+      process.stdout.write(`  ✓ ${t.displayName}: added entry${where}\n`);
+    }
+  }
+
+  if (allOk && !opts.uninstall) {
+    process.stdout.write(
+      "\nDone. Restart the host(s) to pick up the new MCP server.\n" +
+        "Verify the underlying CLIs with `harness-router-mcp init`.\n",
+    );
+  }
+  return allOk ? 0 : 1;
+}
+
 function printUsage(): void {
   process.stdout.write(
     [
@@ -302,6 +406,10 @@ function printUsage(): void {
       "  harness-router-mcp init --install       Try `npm install -g` for any missing/upgradable harness.",
       "  harness-router-mcp init --harness <id>  Limit to one harness (claude_code|codex|cursor|gemini_cli|opencode|copilot).",
       "  harness-router-mcp init --no-verify     Skip the live ~5-token dispatch probe.",
+      "  harness-router-mcp install              Detect MCP hosts and add `harness-router` entry to each.",
+      "  harness-router-mcp install --target <id>  Install into one host only (claude-desktop|cursor|codex).",
+      "  harness-router-mcp install --print      Print the config snippet for each host (no file writes).",
+      "  harness-router-mcp install --uninstall  Remove the `harness-router` entry from each host.",
       '  harness-router-mcp route "<prompt>"     Pick a service and dispatch (live streaming).',
       "  harness-router-mcp list-services        Show enabled services.",
       "  harness-router-mcp dashboard            Show quota + breaker status (one-shot).",
@@ -331,6 +439,10 @@ export async function main(argv: string[]): Promise<number> {
       install: { type: "boolean" },
       "no-verify": { type: "boolean" },
       harness: { type: "string" },
+      target: { type: "string" },
+      print: { type: "boolean" },
+      uninstall: { type: "boolean" },
+      name: { type: "string" },
     },
     allowPositionals: true,
     strict: false,
@@ -381,6 +493,14 @@ export async function main(argv: string[]): Promise<number> {
         harnessFilter = harnessArg;
       }
       return cmdInit(configPath, installFlag, noVerify, harnessFilter);
+    }
+    case "install": {
+      const opts: InstallCmdOpts = {};
+      if (typeof values.target === "string") opts.target = values.target;
+      if (values.print === true) opts.print = true;
+      if (values.uninstall === true) opts.uninstall = true;
+      if (typeof values.name === "string") opts.name = values.name;
+      return cmdInstall(opts);
     }
     case "list-services":
       return cmdListServices(configPath);

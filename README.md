@@ -80,11 +80,37 @@ Requires **Node ≥ 20** and at least one installed CLI: `claude`, `codex`, `gem
 
 ## First-run setup
 
-The fastest way to know whether your stack is ready:
-
 ```bash
+# 1. Wire harness-router-mcp into your MCP hosts (Claude Desktop, Cursor, Codex).
+#    Detects which hosts are installed, edits each one's config in place,
+#    skips anything not present. Idempotent.
+harness-router-mcp install
+
+# 2. Verify the underlying CLIs (claude, codex, cursor, gemini, opencode, copilot)
+#    are installed, authed, and dispatching successfully.
 harness-router-mcp init
 ```
+
+`install` writes `harness-router` into the right MCP-server namespace of each detected host:
+
+| Host                | Config file                                                                                                                             | Format                              |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| Claude Desktop      | `%APPDATA%\Claude\claude_desktop_config.json` (Win) / `~/Library/Application Support/Claude/...` (mac) / `~/.config/Claude/...` (Linux) | JSON `mcpServers["harness-router"]` |
+| Cursor IDE          | `~/.cursor/mcp.json`                                                                                                                    | JSON `mcpServers["harness-router"]` |
+| Codex CLI / Desktop | `~/.codex/config.toml`                                                                                                                  | TOML `[mcp_servers.harness-router]` |
+
+Restart the host after install to pick up the new MCP server.
+
+Other `install` flags:
+
+| Flag            | Effect                                                                                                                                                      |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--target <id>` | Limit to one host: `claude-desktop` / `cursor` / `codex`.                                                                                                   |
+| `--print`       | Print the config snippet for each host on stdout instead of writing files. Useful for hosts in non-default paths or for piping to a config-management tool. |
+| `--uninstall`   | Remove the `harness-router` entry from each detected host.                                                                                                  |
+| `--name <name>` | Override the entry name (default `harness-router`).                                                                                                         |
+
+`init` still does what it always did:
 
 Per-harness checklist with three states (installed / verified / ready) and the exact next-step command for anything red. Runs a tiny ~5-token dispatch to verify each CLI's auth + JSON parsing actually works end-to-end.
 

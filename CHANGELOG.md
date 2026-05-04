@@ -83,6 +83,28 @@ were ported to the new router shape).
 - The "harness × task_type" capability matrix and the `cli_capability`
   multipliers per harness. Those numbers were vibes, not measurements.
 
+### Install command
+
+- **`harness-router-mcp install`** — new CLI subcommand that wires the MCP
+  server itself into every detected MCP host's user-scoped config:
+  - Claude Desktop (`%APPDATA%\Claude\claude_desktop_config.json` on Windows,
+    `~/Library/Application Support/Claude/...` on macOS, `~/.config/Claude/...`
+    on Linux) — JSON, under `mcpServers["harness-router"]`.
+  - Cursor IDE (`~/.cursor/mcp.json`) — same JSON shape.
+  - Codex CLI / Desktop (`~/.codex/config.toml`) — TOML, `[mcp_servers.harness-router]`.
+- Idempotent: re-running on an already-installed host is a no-op. Preserves
+  every other entry in the host's config (verified against real configs with
+  six existing servers in Codex's TOML, custom HTTP-style entries in Cursor,
+  preferences blocks in Claude Desktop).
+- Detection is opportunistic — only acts on hosts whose config dir actually
+  exists. Hosts not installed on the machine are skipped with a log line, not
+  treated as errors.
+- Flags: `--target <id>` (single-host), `--print` (dry-run, prints snippets
+  to stdout for manual install), `--uninstall` (remove the entry), `--name`
+  (override the entry's server name).
+- New dep: `smol-toml` (~24 kB, ESM-native, maintained) for round-tripping
+  Codex's TOML config without clobbering existing entries.
+
 ### First-run UX
 
 - Default models in `CLI_DEFAULTS` now use each CLI's documented alias where
