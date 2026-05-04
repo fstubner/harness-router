@@ -151,7 +151,10 @@ export class CopilotDispatcher extends BaseDispatcher {
       args.push("--add-dir", workingDir);
     }
     if (opts.modelOverride) {
-      args.push("-m", opts.modelOverride);
+      // Copilot CLI rejects the short -m flag with "unknown option '-m'".
+      // Long --model is the documented form. (Verified live against
+      // @github/copilot v0.0.343, May 2026.)
+      args.push("--model", opts.modelOverride);
     }
 
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;

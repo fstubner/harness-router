@@ -230,6 +230,43 @@ function tierFrom(v: unknown): RouteTier {
   return v === "metered" ? "metered" : "subscription";
 }
 
+/**
+ * Migrate a v0.1 numeric tier (1|2|3) to a v0.2 string tier. The v0.1
+ * convention was: tier 1 = frontier (subscription CLIs), tier 2 = strong
+ * (subscription CLIs), tier 3 = fast/local (openai_compatible endpoints).
+ * Map to subscription/metered accordingly. Returns null when the input
+ * is not a numeric tier.
+ */
+function migrateNumericTier(v: unknown, serviceType: string): RouteTier | null {
+  const n = typeof v === "number" ? v : typeof v === "string" && /^\d+$/.test(v) ? Number(v) : NaN;
+  if (!Number.isFinite(n)) return null;
+  // Tier 3 was reserved for OpenAI-compatible endpoints in v0.1, which now
+  // map most cleanly to the metered tier. Tier 1/2 were CLI services →
+  // subscription. Endpoints declared as type=openai_compatible always go
+  // to metered regardless of original tier number.
+  if (serviceType === "openai_compatible") return "metered";
+  if (n >= 3) return "metered";
+  return "subscription";
+}
+
+interface TierMigration {
+  service: string;
+  oldTier: number | string;
+  newTier: RouteTier;
+}
+
+function logTierMigrations(migrations: TierMigration[]): void {
+  if (migrations.length === 0) return;
+  const summary = migrations
+    .map((m) => `${m.service} (tier ${m.oldTier} → ${m.newTier})`)
+    .join(", ");
+  process.stderr.write(
+    `[harness-router-mcp] WARN: migrated v0.1 numeric tier values for ${migrations.length} ` +
+      `service${migrations.length === 1 ? "" : "s"}: ${summary}. ` +
+      `Update your config to use \`tier: subscription\` or \`tier: metered\` directly.\n`,
+  );
+}
+
 function modelPriorityFrom(raw: unknown): readonly string[] | undefined {
   if (!Array.isArray(raw)) return undefined;
   const out: string[] = [];
@@ -301,6 +338,7 @@ function parseGenericCliRecipe(svc: Record<string, unknown>): GenericCliRecipe {
 function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
   const services: Record<string, ServiceConfig> = {};
   const rawServices = (raw.services ?? {}) as Record<string, Record<string, unknown>>;
+  const migrations: TierMigration[] = [];
 
   for (const [name, svc] of Object.entries(rawServices)) {
     const rawType = str(svc.type) ?? "cli";
@@ -313,6 +351,22 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
       );
     }
     const type: ServiceConfig["type"] = isKnownType ? rawType : "cli";
+    // Migrate v0.1 numeric tier (1|2|3) to a v0.2 string tier so users
+    // upgrading from a v0.1 config don't end up with every service silently
+    // pinned to the same tier. Records the migration for a consolidated
+    // stderr warning at the end of parsing.
+    const migrated = migrateNumericTier(svc.tier, type);
+    const tier =
+      migrated !== null
+        ? (() => {
+            migrations.push({
+              service: name,
+              oldTier: svc.tier as number | string,
+              newTier: migrated,
+            });
+            return migrated;
+          })()
+        : tierFrom(svc.tier);
     const svcConfig: ServiceConfig = {
       name,
       enabled: bool(svc.enabled, true),
@@ -323,7 +377,7 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
       ...(str(svc.base_url) !== undefined ? { baseUrl: str(svc.base_url)! } : {}),
       ...(str(svc.model) !== undefined ? { model: str(svc.model)! } : {}),
       ...(str(svc.cli_model) !== undefined ? { cliModel: str(svc.cli_model)! } : {}),
-      tier: tierFrom(svc.tier),
+      tier,
       ...(() => {
         const t = thinkingFrom(svc.thinking_level);
         return t !== undefined ? { thinkingLevel: t } : {};
@@ -338,6 +392,8 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
     };
     services[name] = svcConfig;
   }
+
+  logTierMigrations(migrations);
 
   const explicitPriority = modelPriorityFrom(raw.model_priority);
   const cfg: RouterConfig = {
@@ -444,11 +500,26 @@ function addEndpoints(services: Record<string, ServiceConfig>, raw: Record<strin
   const endpoints = Array.isArray(raw.endpoints)
     ? (raw.endpoints as Record<string, unknown>[])
     : [];
+  const migrations: TierMigration[] = [];
   for (const ep of endpoints) {
     const name = str(ep.name);
     const baseUrl = str(ep.base_url);
     const model = str(ep.model);
     if (!name || !baseUrl || !model) continue;
+
+    // v0.1 endpoints carried `tier: 3` as the API/local convention. Migrate
+    // numeric tiers — endpoints always go to "metered" since they bill per
+    // token (override with explicit string `tier: subscription` for flat-rate
+    // API arrangements).
+    const epTier = ep.tier ?? "metered";
+    const migrated = migrateNumericTier(epTier, "openai_compatible");
+    let tier: RouteTier;
+    if (migrated !== null) {
+      migrations.push({ service: name, oldTier: epTier as number | string, newTier: migrated });
+      tier = migrated;
+    } else {
+      tier = tierFrom(epTier);
+    }
 
     const svc: ServiceConfig = {
       name,
@@ -459,10 +530,11 @@ function addEndpoints(services: Record<string, ServiceConfig>, raw: Record<strin
       ...(str(ep.cli_model) !== undefined ? { cliModel: str(ep.cli_model)! } : {}),
       command: "",
       ...(str(ep.api_key) !== undefined ? { apiKey: str(ep.api_key)! } : {}),
-      tier: tierFrom(ep.tier ?? "metered"),
+      tier,
     };
     services[name] = svc;
   }
+  logTierMigrations(migrations);
 }
 
 // ---------------------------------------------------------------------------

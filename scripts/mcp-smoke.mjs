@@ -10,7 +10,14 @@
 // doubles as a release-readiness check.
 //
 // Usage:
-//   npm run build && npm run smoke
+//   npm run build && npm run smoke           — fast checks only
+//   npm run build && npm run smoke -- --live — also dispatch through every
+//                                              real CLI, costing ~60 tokens
+//
+// `--live` (or the legacy HARNESS_ROUTER_LIVE_DISPATCH=1 env var) opts into
+// real dispatches against every configured service. Skipped by default
+// because each invocation costs real subscription quota and takes a few
+// seconds, and CI doesn't have CLI auth set up anyway.
 
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -22,6 +29,10 @@ const repoRoot = join(here, "..");
 const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf-8"));
 const expectedName = pkg.name;
 const expectedVersion = pkg.version;
+
+// Live mode: --live flag OR legacy env var. Either is fine; the flag is
+// preferred for new runs.
+const LIVE = process.argv.includes("--live") || process.env.HARNESS_ROUTER_LIVE_DISPATCH === "1";
 
 const child = spawn(process.execPath, [join(repoRoot, "dist", "bin.js"), "mcp"], {
   stdio: ["pipe", "pipe", "pipe"],
@@ -175,11 +186,10 @@ try {
     (dashText.includes("Subscription") || dashText.includes("Metered")) && dashText.length > 200,
   );
 
-  // --- LIVE DISPATCH (opt-in) --------------------------------------------
-  // Set HARNESS_ROUTER_LIVE_DISPATCH=1 to run a real `code` call.
-  // Uses ~5 input + ~5 output tokens against whichever route the priority
-  // walk picks (highest-priority subscription service with quota).
-  if (process.env.HARNESS_ROUTER_LIVE_DISPATCH === "1") {
+  // --- LIVE DISPATCH (opt-in via --live or HARNESS_ROUTER_LIVE_DISPATCH=1) --
+  // Real `code` call: ~5 in / ~5 out tokens against whichever route the
+  // priority walk picks (highest-priority subscription service with quota).
+  if (LIVE) {
     console.log("\n[live] dispatching code with a 5-token prompt …");
     const live = await rpc(
       "tools/call",
@@ -262,7 +272,9 @@ try {
       }
     }
   } else {
-    console.log("\n[live] skipped — set HARNESS_ROUTER_LIVE_DISPATCH=1 to run a real dispatch.");
+    console.log(
+      "\n[live] skipped — pass `--live` (or set HARNESS_ROUTER_LIVE_DISPATCH=1) to run real dispatches.",
+    );
   }
 
   console.log("\n--- summary ---");

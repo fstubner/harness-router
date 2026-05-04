@@ -128,15 +128,16 @@ describe("CopilotDispatcher", () => {
     expect(opts?.cwd).toBeUndefined();
   });
 
-  it("forwards --model when modelOverride is set (`-m` is the short flag copilot uses)", async () => {
+  it("forwards --model when modelOverride is set (copilot CLI rejects the short -m flag)", async () => {
     runMock.mockResolvedValue(
       ok({ stdout: JSON.stringify({ type: "agent.message", text: "ok" }) }),
     );
     const d = new CopilotDispatcher();
     await d.dispatch("hi", [], "", { modelOverride: "gpt-5" });
     const { args } = captureCall(0);
-    expect(args).toContain("-m");
-    const idx = args.indexOf("-m");
+    expect(args).toContain("--model");
+    expect(args).not.toContain("-m");
+    const idx = args.indexOf("--model");
     expect(args[idx + 1]).toBe("gpt-5");
   });
 
