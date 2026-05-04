@@ -305,19 +305,25 @@ export class Router {
         if (lastDecision === null) {
           const breakerInfo: Record<string, ReturnType<CircuitBreaker["status"]>> = {};
           for (const [name, b] of this.breakers) breakerInfo[name] = b.status();
-          const tripped = Object.entries(breakerInfo)
-            .filter(([, s]) => s.tripped)
-            .map(([name, s]) => `${name} (${Math.round(s.cooldownRemainingSec ?? 0)}s)`);
           const services = Object.entries(this.config.services).filter(([, s]) => s.enabled);
           const reachable = services.filter(([n]) => this.dispatchers[n]?.isAvailable());
+          // Only the *reachable* services' breakers matter for the "all tripped"
+          // check. A non-reachable service whose breaker happens to be closed
+          // shouldn't disqualify the rate-limit branch, and conversely a
+          // reachable service with a closed breaker means the cause isn't
+          // rate-limiting (it's a model-priority mismatch).
+          const reachableTripped = reachable.filter(([n]) => breakerInfo[n]?.tripped);
+          const trippedSummary = reachableTripped
+            .map(([n]) => `${n} (${Math.round(breakerInfo[n]?.cooldownRemainingSec ?? 0)}s)`)
+            .join(", ");
           const reasonPart =
             services.length === 0
               ? "no services configured"
               : reachable.length === 0
                 ? "no service is installed/reachable on this machine"
-                : tripped.length > 0
-                  ? `every service is rate-limited: ${tripped.join(", ")}`
-                  : "no service has a model matching the priority list";
+                : reachableTripped.length === reachable.length
+                  ? `every reachable service is rate-limited: ${trippedSummary}`
+                  : "no reachable service has a model matching the priority list";
           const result: DispatchResult = {
             output: "",
             service: "none",
@@ -432,9 +438,13 @@ export class Router {
       reason: "explicit",
     };
 
+    // Same cli_model fallback as runStream — without this, services with a
+    // distinct cli_model (e.g. canonical "claude-opus-4.7" → CLI alias "opus")
+    // would get the canonical name passed to --model and the CLI would reject it.
+    const cliModel = cfg.cliModel ?? cfg.model;
     const dispatcher = this.dispatchers[service]!;
     const dispatchOpts: { modelOverride?: string } = {};
-    if (decision.model) dispatchOpts.modelOverride = decision.model;
+    if (cliModel) dispatchOpts.modelOverride = cliModel;
 
     let finalResult: DispatchResult | null = null;
     for await (const event of dispatcher.stream(prompt, files, workingDir, dispatchOpts)) {
@@ -530,8 +540,10 @@ export class Router {
       quotaScore,
       reason: "explicit",
     };
+    // cli_model fallback — see runStreamTo / runStream for context.
+    const cliModel = cfg.cliModel ?? cfg.model;
     const dispatchOpts: { modelOverride?: string } = {};
-    if (decision.model) dispatchOpts.modelOverride = decision.model;
+    if (cliModel) dispatchOpts.modelOverride = cliModel;
     const result = await withDispatcherSpan(
       "dispatch",
       { "dispatcher.id": service, ...(decision.model ? { model: decision.model } : {}) },

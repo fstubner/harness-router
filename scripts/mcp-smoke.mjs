@@ -118,69 +118,30 @@ try {
   const toolsR = await rpc("tools/list", {});
   const toolNames = (toolsR.result?.tools ?? []).map((t) => t.name).sort();
   console.log(`\n[tools/list — ${toolNames.length}] ${toolNames.join(", ")}`);
-  const expectedTools = [
-    "code_auto",
-    "code_mixture",
-    "code_with_claude",
-    "code_with_codex",
-    "code_with_copilot",
-    "code_with_cursor",
-    "code_with_gemini",
-    "code_with_opencode",
-    "dashboard",
-    "get_quota_status",
-    "list_available_services",
-    "setup",
-  ].sort();
-  check("all 12 tools advertised", JSON.stringify(toolNames) === JSON.stringify(expectedTools));
+  const expectedTools = ["code", "code_mixture", "dashboard", "get_quota_status"].sort();
+  check("all 4 tools advertised", JSON.stringify(toolNames) === JSON.stringify(expectedTools));
 
   // --- prompts/list -------------------------------------------------------
   const promptsR = await rpc("prompts/list", {});
   const promptNames = (promptsR.result?.prompts ?? []).map((p) => p.name).sort();
   console.log(`\n[prompts/list — ${promptNames.length}] ${promptNames.join(", ")}`);
-  const expectedPrompts = [
-    "compare-implementations",
-    "harness-health-check",
-    "onboard-coding-stack",
-    "pick-best-harness",
-    "route-coding-task",
-  ];
+  const expectedPrompts = ["compare-models", "health-check", "route-task"];
   check(
-    "all 5 prompts advertised",
+    "all 3 prompts advertised",
     JSON.stringify(promptNames) === JSON.stringify(expectedPrompts),
   );
 
   // --- prompts/get --------------------------------------------------------
   const got = await rpc("prompts/get", {
-    name: "route-coding-task",
-    arguments: { task: "fix the auth bug on /login", task_type: "execute" },
+    name: "route-task",
+    arguments: { task: "fix the auth bug on /login", model: "claude-opus-4-7" },
   });
   const text = got.result?.messages?.[0]?.content?.text ?? "";
-  console.log(`\n[prompts/get route-coding-task] rendered ${text.length} chars`);
+  console.log(`\n[prompts/get route-task] rendered ${text.length} chars`);
   console.log(`  preview: ${text.split("\n").slice(0, 3).join(" / ")}`);
   check("prompt rendered the task", text.includes("fix the auth bug on /login"));
-  check("prompt rendered the task_type hint", text.includes('hints.taskType: "execute"'));
-  check("prompt names code_auto", text.includes("code_auto"));
-
-  // --- live tool call -----------------------------------------------------
-  const listSvc = await rpc("tools/call", {
-    name: "list_available_services",
-    arguments: {},
-  });
-  const svcContent = listSvc.result?.content?.[0]?.text ?? "";
-  let parsedSvc = null;
-  try {
-    parsedSvc = JSON.parse(svcContent);
-  } catch {
-    /* nope */
-  }
-  console.log(
-    `\n[tools/call list_available_services] services=${parsedSvc?.services?.length ?? "?"}`,
-  );
-  check(
-    "list_available_services returns a JSON services array",
-    Array.isArray(parsedSvc?.services),
-  );
+  check("prompt rendered the model override", text.includes('hints.model: "claude-opus-4-7"'));
+  check("prompt names the code tool", text.includes("`code`"));
 
   // --- get_quota_status ---------------------------------------------------
   const quota = await rpc("tools/call", {
@@ -207,24 +168,24 @@ try {
   console.log(
     `\n[tools/call dashboard] ${dashText.split("\n").length} lines, ${dashText.length} chars`,
   );
+  // v0.2.0 dashboard groups by cost tier (subscription / metered) instead of
+  // numeric tiers. Look for the new section headers + a routing-pick line.
   check(
     "dashboard renders a multi-line text block",
-    dashText.includes("Tier 1") && dashText.length > 200,
+    (dashText.includes("Subscription") || dashText.includes("Metered")) && dashText.length > 200,
   );
 
   // --- LIVE DISPATCH (opt-in) --------------------------------------------
-  // Set HARNESS_ROUTER_LIVE_DISPATCH=1 to run a real `code_auto` call.
-  // Uses ~5 input + ~5 output tokens against whichever harness wins routing.
+  // Set HARNESS_ROUTER_LIVE_DISPATCH=1 to run a real `code` call.
+  // Uses ~5 input + ~5 output tokens against whichever route the priority
+  // walk picks (highest-priority subscription service with quota).
   if (process.env.HARNESS_ROUTER_LIVE_DISPATCH === "1") {
-    console.log("\n[live] dispatching code_auto with a 5-token prompt …");
+    console.log("\n[live] dispatching code with a 5-token prompt …");
     const live = await rpc(
       "tools/call",
       {
-        name: "code_auto",
-        arguments: {
-          prompt: "Reply with only the single word: ok",
-          hints: { taskType: "execute" },
-        },
+        name: "code",
+        arguments: { prompt: "Reply with only the single word: ok" },
       },
       60_000,
     );
@@ -240,47 +201,43 @@ try {
     console.log(`  output:  ${(parsedLive?.output ?? "").slice(0, 60).replace(/\n/g, " ")}`);
     if (parsedLive?.routing) {
       console.log(
-        `  routing: tier=${parsedLive.routing.tier} score=${parsedLive.routing.finalScore?.toFixed?.(3)}`,
+        `  routing: model=${parsedLive.routing.model} tier=${parsedLive.routing.tier} quota=${parsedLive.routing.quotaScore?.toFixed?.(2)}`,
       );
     }
-    check(
-      "live code_auto returned success=true",
-      parsedLive?.success === true,
-      parsedLive?.error ?? "",
-    );
-    check("live code_auto returned non-empty output", (parsedLive?.output ?? "").length > 0);
-    check("live code_auto recorded a routing decision", !!parsedLive?.routing);
+    check("live code returned success=true", parsedLive?.success === true, parsedLive?.error ?? "");
+    check("live code returned non-empty output", (parsedLive?.output ?? "").length > 0);
+    check("live code recorded a routing decision", !!parsedLive?.routing);
 
-    // --- per-harness verification --------------------------------------
-    // One forced dispatch through each harness's tool. Proves each
-    // dispatcher's subprocess args + JSON-output parsing actually work.
-    const perHarness = [
-      { tool: "code_with_claude", harness: "claude_code" },
-      { tool: "code_with_codex", harness: "codex" },
-      { tool: "code_with_cursor", harness: "cursor" },
-      { tool: "code_with_gemini", harness: "gemini_cli" },
-      { tool: "code_with_opencode", harness: "opencode" },
-      { tool: "code_with_copilot", harness: "copilot" },
-    ];
-    console.log("\n[per-harness] dispatching one prompt through each of 6 harnesses…");
-    for (const { tool, harness } of perHarness) {
+    // --- per-service verification --------------------------------------
+    // Force-dispatch through each enabled service via hints.service. Proves
+    // each dispatcher's subprocess args + JSON-output parsing actually work
+    // with the new model-first routing decision shape.
+    const listSvc = await rpc("tools/call", {
+      name: "get_quota_status",
+      arguments: {},
+    });
+    const svcNames = Object.keys(JSON.parse(listSvc.result?.content?.[0]?.text ?? "{}"));
+    console.log(
+      `\n[per-service] dispatching one prompt through each of ${svcNames.length} services…`,
+    );
+    for (const svcName of svcNames) {
       const t0 = Date.now();
       let resp;
       try {
         resp = await rpc(
           "tools/call",
           {
-            name: tool,
+            name: "code",
             arguments: {
               prompt: "Reply with only the single word: ok",
-              hints: { taskType: "execute" },
+              hints: { service: svcName },
             },
           },
           120_000,
         );
       } catch (err) {
-        console.log(`  ✖ ${tool} → ${err.message}`);
-        check(`${tool} (${harness}) succeeded`, false, err.message);
+        console.log(`  ✖ code (service=${svcName}) → ${err.message}`);
+        check(`code via ${svcName} succeeded`, false, err.message);
         continue;
       }
       const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
@@ -293,20 +250,15 @@ try {
       }
       const out = (parsed?.output ?? "").trim().slice(0, 40).replace(/\n/g, " ");
       const svc = parsed?.service ?? "?";
-      const routedHarness = parsed?.routing?.service ?? svc;
       const ok = parsed?.success === true && (parsed?.output ?? "").length > 0;
       const tick = ok ? "✔" : "✖";
       const err = parsed?.error ?? "";
       console.log(
-        `  ${tick} ${tool}  →  ${svc} (${elapsed}s)  output: "${out}"${err ? `  err: ${err}` : ""}`,
+        `  ${tick} code service=${svcName}  →  ${svc} (${elapsed}s)  output: "${out}"${err ? `  err: ${err}` : ""}`,
       );
-      check(`${tool} succeeded against ${harness}`, ok, err);
+      check(`code via ${svcName} succeeded`, ok, err);
       if (ok) {
-        check(
-          `${tool} routed to a ${harness} service`,
-          routedHarness.includes(harness) || svc.includes(harness.split("_")[0]),
-          `service=${svc}`,
-        );
+        check(`code via ${svcName} routed to that service`, svc === svcName, `service=${svc}`);
       }
     }
   } else {

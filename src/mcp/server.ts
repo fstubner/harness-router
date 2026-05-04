@@ -16,7 +16,12 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
-import { bootstrapRuntime, ConfigHotReloader, RuntimeHolder } from "./config-hot-reload.js";
+import {
+  bootstrapRuntime,
+  ConfigHotReloader,
+  RuntimeHolder,
+  type RuntimeState,
+} from "./config-hot-reload.js";
 import { registerTools } from "./tools.js";
 import { registerPrompts } from "./prompts.js";
 import { initObservability } from "../observability/index.js";
@@ -58,9 +63,7 @@ export interface BuiltMcp {
  * surface stderr in their server logs, which is where users look when the
  * router isn't doing what they expect.
  */
-function logStartupBanner(
-  state: ReturnType<typeof bootstrapRuntime> extends Promise<infer S> ? S : never,
-): void {
+function logStartupBanner(state: RuntimeState): void {
   const services = Object.values(state.config.services).filter((s) => s.enabled);
   const reachable = services.filter((s) => state.dispatchers[s.name]?.isAvailable());
   const subscription = reachable.filter((s) => (s.tier ?? "subscription") === "subscription");

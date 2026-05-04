@@ -449,4 +449,94 @@ describe("Router.stream — tier and model fallback", () => {
     expect(logs.claude_code![0]!.modelOverride).toBe("opus");
     expect(logs.cursor![0]!.modelOverride).toBe("claude-3-opus-thinking-max");
   });
+
+  it("streamTo also honors cliModel (regression: code_mixture path)", async () => {
+    // streamTo bypasses the priority walk but still needs the cli_model
+    // translation. Without this, code_mixture against a service with a
+    // distinct cli_model would invoke the CLI with the canonical name and
+    // fail. Direct test of router.streamTo, mirroring code_mixture's call.
+    const { router, logs } = setup({
+      modelPriority: ["claude-opus"],
+      services: {
+        claude_code: {
+          model: "claude-opus",
+          cliModel: "opus",
+          fake: { succeed: true },
+        },
+      },
+    });
+    const events: DispatcherEvent[] = [];
+    for await (const { event } of router.streamTo("claude_code", "p", [], "/cwd")) {
+      events.push(event);
+    }
+    expect(logs.claude_code![0]!.modelOverride).toBe("opus");
+    expect(events.find((e) => e.type === "completion")).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// "No routes" error classification — covers the four branches surfaced when
+// pickService returns null on the first iteration of runStream.
+// ---------------------------------------------------------------------------
+
+async function noRoutesError(router: Router): Promise<{ error: string; service: string } | null> {
+  const out = await router.route("p", [], "/cwd");
+  return out.result.success ? null : { error: out.result.error ?? "", service: out.result.service };
+}
+
+describe("Router — no-routes error classification", () => {
+  it("'no services configured' when services map is empty", async () => {
+    const { router } = setup({
+      modelPriority: ["any"],
+      services: {},
+    });
+    const r = await noRoutesError(router);
+    expect(r?.error).toMatch(/no services configured/i);
+    expect(r?.error).toMatch(/harness-router-mcp init/);
+  });
+
+  it("'nothing installed' when every dispatcher is unavailable", async () => {
+    const { router } = setup({
+      modelPriority: ["m"],
+      services: {
+        a: { model: "m", fake: { unavailable: true } },
+        b: { model: "m", fake: { unavailable: true } },
+      },
+    });
+    const r = await noRoutesError(router);
+    expect(r?.error).toMatch(/no service is installed\/reachable/i);
+  });
+
+  it("'every reachable service is rate-limited' when ALL breakers tripped before dispatch", async () => {
+    // The classifier fires when pickService returns null on the FIRST
+    // iteration — i.e. nothing was even attempted. Once a dispatch produces
+    // a completion event (even a rate-limited one), the user sees that
+    // completion rather than the synthesised classifier message. To exercise
+    // the rate-limit branch we have to pre-trip the breakers from a previous
+    // dispatch.
+    const { router } = setup({
+      modelPriority: ["m"],
+      services: {
+        a: { model: "m", fake: { succeed: true } },
+        b: { model: "m", fake: { succeed: true } },
+      },
+    });
+    router.getBreaker("a")!.trip(45);
+    router.getBreaker("b")!.trip(60);
+    const r = await noRoutesError(router);
+    expect(r?.error).toMatch(/every reachable service is rate-limited/i);
+    expect(r?.error).toMatch(/a \(\d+s\)/);
+    expect(r?.error).toMatch(/b \(\d+s\)/);
+  });
+
+  it("'no model match' when reachable services exist but their model isn't in priority", async () => {
+    const { router } = setup({
+      modelPriority: ["unobtainable-model"],
+      services: {
+        a: { model: "different-model", fake: { succeed: true } },
+      },
+    });
+    const r = await noRoutesError(router);
+    expect(r?.error).toMatch(/no reachable service has a model matching the priority/i);
+  });
 });
