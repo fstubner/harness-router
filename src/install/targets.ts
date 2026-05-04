@@ -309,7 +309,7 @@ const cursorTarget: InstallTarget = {
 
 const codexTarget: InstallTarget = {
   id: "codex",
-  displayName: "Codex CLI / Desktop",
+  displayName: "Codex (CLI + Desktop + IDE extension — shared config)",
   configPath() {
     const dir = path.join(homedir(), ".codex");
     if (!dirExists(dir)) return null;
@@ -402,7 +402,7 @@ export function targetsForEnv(env: InstallEnv): readonly InstallTarget[] {
     },
     {
       id: "codex",
-      displayName: "Codex CLI / Desktop",
+      displayName: "Codex (CLI + Desktop + IDE extension — shared config)",
       configPath: () => pathFor("codex"),
       install: (entry) => tomlInstall(pathFor("codex"), entry),
       uninstall: (name) => tomlUninstall(pathFor("codex"), name),

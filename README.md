@@ -93,11 +93,11 @@ harness-router-mcp init
 
 `install` writes `harness-router` into the right MCP-server namespace of each detected host:
 
-| Host                | Config file                                                                                                                             | Format                              |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| Claude Desktop      | `%APPDATA%\Claude\claude_desktop_config.json` (Win) / `~/Library/Application Support/Claude/...` (mac) / `~/.config/Claude/...` (Linux) | JSON `mcpServers["harness-router"]` |
-| Cursor IDE          | `~/.cursor/mcp.json`                                                                                                                    | JSON `mcpServers["harness-router"]` |
-| Codex CLI / Desktop | `~/.codex/config.toml`                                                                                                                  | TOML `[mcp_servers.harness-router]` |
+| Host                                  | Config file                                                                                                                             | Format                              |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| Claude Desktop                        | `%APPDATA%\Claude\claude_desktop_config.json` (Win) / `~/Library/Application Support/Claude/...` (mac) / `~/.config/Claude/...` (Linux) | JSON `mcpServers["harness-router"]` |
+| Cursor IDE                            | `~/.cursor/mcp.json`                                                                                                                    | JSON `mcpServers["harness-router"]` |
+| Codex (CLI + Desktop + IDE extension) | `~/.codex/config.toml` — all three Codex clients share this file per OpenAI's docs                                                      | TOML `[mcp_servers.harness-router]` |
 
 Restart the host after install to pick up the new MCP server.
 
