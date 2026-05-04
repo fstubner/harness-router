@@ -305,13 +305,26 @@ export class Router {
         if (lastDecision === null) {
           const breakerInfo: Record<string, ReturnType<CircuitBreaker["status"]>> = {};
           for (const [name, b] of this.breakers) breakerInfo[name] = b.status();
+          const tripped = Object.entries(breakerInfo)
+            .filter(([, s]) => s.tripped)
+            .map(([name, s]) => `${name} (${Math.round(s.cooldownRemainingSec ?? 0)}s)`);
+          const services = Object.entries(this.config.services).filter(([, s]) => s.enabled);
+          const reachable = services.filter(([n]) => this.dispatchers[n]?.isAvailable());
+          const reasonPart =
+            services.length === 0
+              ? "no services configured"
+              : reachable.length === 0
+                ? "no service is installed/reachable on this machine"
+                : tripped.length > 0
+                  ? `every service is rate-limited: ${tripped.join(", ")}`
+                  : "no service has a model matching the priority list";
           const result: DispatchResult = {
             output: "",
             service: "none",
             success: false,
             error:
-              "No available routes — every model has zero usable services. " +
-              `Breaker state: ${JSON.stringify(breakerInfo)}`,
+              `No available routes — ${reasonPart}. ` +
+              "Run `harness-router-mcp init` to see what's installed and what's missing.",
           };
           yield { event: { type: "completion", result }, decision: null };
         }

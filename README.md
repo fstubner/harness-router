@@ -78,7 +78,7 @@ harness-router-mcp --help
 
 Requires **Node ≥ 20** and at least one installed CLI: `claude`, `codex`, `gemini`, Cursor's `agent`, `opencode`, `copilot` (GitHub Copilot CLI), or any third-party CLI you register via YAML.
 
-## Onboarding
+## First-run setup
 
 The fastest way to know whether your stack is ready:
 
@@ -87,6 +87,8 @@ harness-router-mcp init
 ```
 
 Per-harness checklist with three states (installed / verified / ready) and the exact next-step command for anything red. Runs a tiny ~5-token dispatch to verify each CLI's auth + JSON parsing actually works end-to-end.
+
+> **Inside an MCP host** (Claude Desktop, Cursor agent, etc.) the server logs a one-line startup banner to stderr summarising what it found — count of reachable services per tier, the active model priority, and a pointer back to `harness-router-mcp init` if nothing is reachable. Most MCP hosts surface stderr in their server logs (Claude Desktop: "View server logs"; Cursor: "MCP" panel), which is where to look when routing isn't doing what you expect.
 
 ```text
 claude_code  Claude Code CLI
@@ -254,6 +256,25 @@ hands each one its own `cli_model:` at dispatch time.
 OpenAI-compatible endpoints (Ollama, LM Studio, OpenRouter, raw OpenAI/Anthropic
 APIs) work the same way — they default to `tier: metered` since that's how
 they bill.
+
+### Per-CLI model name conventions
+
+Each CLI accepts its own naming style for `--model`. The router doesn't
+translate; whatever you put in `model:` (or `cli_model:`) is what the CLI
+sees. Reference for the six built-in harnesses, current as of May 2026:
+
+| CLI              | Aliases                                                  | Concrete IDs (examples)                                                           | Notes                                                                                    |
+| ---------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `claude`         | `default`, `best`, `sonnet`, `opus`, `haiku`, `opusplan` | `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5` (dashes, no dots)      | Aliases roll forward to latest. Append `[1m]` for 1M context.                            |
+| `codex`          | _(none)_                                                 | `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`      | Dots in versions. `gpt-5.5` only on ChatGPT auth, not API auth.                          |
+| `gemini`         | `auto`, `pro`, `flash`, `flash-lite`                     | `gemini-2.5-pro`, `gemini-3-pro-preview`, `gemini-2.5-flash`                      | Aliases preferred — auto-roll. Preview models gated behind a flag.                       |
+| `agent` (Cursor) | `Auto`                                                   | `Composer 2`, `Opus 4.6`, `Codex 5.3 High Fast`, `Gemini 3 Pro`, `Grok`           | Descriptive names (mixed casing). Run `agent models` to list what's available.           |
+| `opencode`       | _(none)_                                                 | `anthropic/claude-sonnet-4-20250514`, `openai/gpt-5`, `lmstudio/<provider/model>` | Format is always `provider_id/model_id`. Run `opencode /models` to enumerate.            |
+| `copilot`        | `auto`                                                   | `claude-sonnet-4.5`, `gpt-5.4`, `gpt-5.3-codex`                                   | Subject to subscription policy. Run `/model` interactively to see what your seat allows. |
+
+Built-in defaults pick aliases over fully-versioned IDs where the CLI
+supports them, so they keep working as the providers ship new versions.
+Override per service when you want to pin to a specific version.
 
 ### Adding a third-party CLI without writing code
 

@@ -27,32 +27,59 @@ import type {
 
 // ---------------------------------------------------------------------------
 // Built-in defaults for auto-detected CLIs.
-// Each CLI gets a sensible default model. Users override via `overrides:`
-// or the legacy `services:` block.
+//
+// `model` is what gets passed to each CLI's `--model` flag at dispatch time.
+// We pick aliases over fully-versioned IDs where the CLI supports them, since
+// aliases stay valid as new versions ship. Per-CLI naming as documented:
+//
+//   claude  — aliases: default | best | sonnet | opus | haiku | opusplan
+//             full IDs: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5
+//   codex   — full IDs only: gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.3-codex,
+//             gpt-5.3-codex-spark, gpt-5.2 (no aliases; dots in versions)
+//   gemini  — aliases: auto | pro | flash | flash-lite
+//             full IDs: gemini-2.5-pro, gemini-3-pro-preview, gemini-2.5-flash
+//   agent   — Cursor's CLI uses descriptive names: Auto, Composer 2, Opus 4.6,
+//             Codex 5.3 High Fast, Gemini 3 Pro, Grok. List with `agent models`.
+//   opencode — provider_id/model_id format, e.g. anthropic/claude-sonnet-4-…
+//             OR openai/gpt-5. Run `opencode /models` to enumerate.
+//   copilot — `auto` (router picks) plus models surfaced by your subscription
+//             policy (e.g. claude-sonnet-4.5, gpt-5.4). List with `/model`.
+//
+// Users override via `overrides:` or the legacy `services:` block. Use
+// `cli_model:` to map a canonical routing name onto a CLI-specific name when
+// the CLI uses a different convention.
 // ---------------------------------------------------------------------------
 
 interface CliDefaults {
   command: string;
   harness: string;
-  /** Canonical model ID this CLI serves by default. */
+  /** What gets passed to the CLI's `--model` flag. Aliases preferred. */
   model: string;
   thinkingLevel?: ThinkingLevel;
   maxOutputTokens?: number;
   maxInputTokens?: number;
 }
 
-// Token limits as of April 2026. Conservative upper bounds.
+// Token limits are conservative upper bounds — the actual cap depends on which
+// concrete model the alias resolves to.
 const CLI_DEFAULTS: Record<string, CliDefaults> = {
   claude_code: {
     command: "claude",
     harness: "claude_code",
-    model: "claude-sonnet-4.6",
+    // `sonnet` alias — resolves to the latest Sonnet on Claude Code's Anthropic
+    // API path (currently 4.6) and the latest Sonnet on Bedrock/Vertex/Foundry
+    // (currently 4.5). The alias auto-rolls forward as Anthropic ships new
+    // versions. Use full IDs (`claude-opus-4-7`, etc.) to pin a specific version.
+    model: "sonnet",
     maxOutputTokens: 64_000,
     maxInputTokens: 1_000_000,
   },
   codex: {
     command: "codex",
     harness: "codex",
+    // Codex CLI doesn't expose aliases; full IDs only. gpt-5.4 is the current
+    // flagship on API auth. ChatGPT auth users may also have gpt-5.5 — the
+    // user can override via config.
     model: "gpt-5.4",
     maxOutputTokens: 128_000,
     maxInputTokens: 400_000,
@@ -60,14 +87,19 @@ const CLI_DEFAULTS: Record<string, CliDefaults> = {
   cursor: {
     command: "agent",
     harness: "cursor",
-    model: "claude-sonnet-4.6",
+    // Cursor's CLI uses descriptive names from the in-app picker. `Auto` lets
+    // Cursor route — most users want this. Override with explicit names like
+    // `Opus 4.6` or `Composer 2` if you want a specific model.
+    model: "Auto",
     maxOutputTokens: 64_000,
     maxInputTokens: 1_000_000,
   },
   gemini_cli: {
     command: "gemini",
     harness: "gemini_cli",
-    model: "gemini-3.1-pro",
+    // `pro` alias — resolves to gemini-2.5-pro by default, or
+    // gemini-3-pro-preview when preview features are enabled.
+    model: "pro",
     thinkingLevel: "high",
     maxOutputTokens: 65_536,
     maxInputTokens: 2_000_000,
@@ -75,14 +107,20 @@ const CLI_DEFAULTS: Record<string, CliDefaults> = {
   opencode: {
     command: "opencode",
     harness: "opencode",
-    model: "claude-sonnet-4.6",
+    // OpenCode requires the full `provider/model` form. We can't pick a
+    // sensible default without knowing which providers the user has wired
+    // up, so leave empty and let `opencode` fall back to its own default
+    // (set via `opencode auth login` / `opencode.json`).
+    model: "",
     maxOutputTokens: 64_000,
     maxInputTokens: 1_000_000,
   },
   copilot: {
     command: "copilot",
     harness: "copilot",
-    model: "gpt-5.4",
+    // `auto` — Copilot's own auto-selector. Subject to policy/subscription;
+    // typically routes to Sonnet 4.5 / 4.6 or GPT-5.x.
+    model: "auto",
     maxOutputTokens: 64_000,
     maxInputTokens: 200_000,
   },

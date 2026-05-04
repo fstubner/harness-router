@@ -26,15 +26,16 @@ const SERVER_NAME = "harness-router-mcp";
 const SERVER_VERSION = VERSION;
 
 const SERVER_INSTRUCTIONS =
-  "Route coding tasks via code_auto (with taskType hint: execute | plan | review), " +
-  "code_mixture (to fan out to multiple services), or " +
-  "code_with_<claude|cursor|codex|gemini|opencode|copilot>. " +
-  "Third-party CLIs registered via YAML are reachable through " +
-  "code_auto({hints:{harness:'<id>'}}) — there is no auto-registered " +
-  "code_with_<custom> tool for them. " +
-  "Use dashboard / get_quota_status / list_available_services to inspect live state. " +
-  "Pre-built prompts (route-coding-task, compare-implementations, harness-health-check, " +
-  "onboard-coding-stack, pick-best-harness) are available via the host's prompt picker.";
+  "Model-first router: walks the user's `model_priority` list, preferring " +
+  "subscription-backed services over metered API. Use the `code` tool for " +
+  "most coding tasks — pass `hints.model` to bump a specific model to the " +
+  "front of the priority list, or `hints.service` to force a specific " +
+  "dispatcher. Use `code_mixture` to fan a prompt out to every available " +
+  "service in parallel for synthesis. Use `dashboard` (text) or " +
+  "`get_quota_status` (JSON) to inspect routing state. Pre-built prompts " +
+  "(route-task, compare-models, health-check) are available via the host's " +
+  "prompt picker. If no services are configured or reachable, run " +
+  "`harness-router-mcp init` from the terminal to see what's missing.";
 
 // ---------------------------------------------------------------------------
 // Builder — shared between stdio and HTTP entry points
@@ -51,6 +52,37 @@ export interface BuiltMcp {
   reloader: ConfigHotReloader;
 }
 
+/**
+ * Log a one-line summary of the routing state to stderr at server start.
+ * Uses stderr so it can't pollute the stdio JSON-RPC channel; MCP hosts
+ * surface stderr in their server logs, which is where users look when the
+ * router isn't doing what they expect.
+ */
+function logStartupBanner(
+  state: ReturnType<typeof bootstrapRuntime> extends Promise<infer S> ? S : never,
+): void {
+  const services = Object.values(state.config.services).filter((s) => s.enabled);
+  const reachable = services.filter((s) => state.dispatchers[s.name]?.isAvailable());
+  const subscription = reachable.filter((s) => (s.tier ?? "subscription") === "subscription");
+  const metered = reachable.filter((s) => s.tier === "metered");
+  const priority = state.config.modelPriority ?? [];
+
+  const ready = reachable.map((s) => s.name).join(", ") || "(none)";
+  process.stderr.write(
+    `[harness-router-mcp v${SERVER_VERSION}] ` +
+      `${reachable.length}/${services.length} services reachable ` +
+      `(${subscription.length} subscription, ${metered.length} metered) | ` +
+      `priority: ${priority.length > 0 ? priority.join(" → ") : "(empty — no models declared)"}\n`,
+  );
+  process.stderr.write(`[harness-router-mcp] ready: ${ready}\n`);
+  if (reachable.length === 0) {
+    process.stderr.write(
+      "[harness-router-mcp] no services reachable. Run `harness-router-mcp init` " +
+        "to see what needs installing or authenticating.\n",
+    );
+  }
+}
+
 /** Bootstrap runtime state + build an `McpServer` with all tools registered. */
 export async function buildMcpServer(opts: BuildMcpOptions = {}): Promise<BuiltMcp> {
   // Initialize OpenTelemetry once. Idempotent; no-op when OTEL_SDK_DISABLED=true.
@@ -61,6 +93,8 @@ export async function buildMcpServer(opts: BuildMcpOptions = {}): Promise<BuiltM
   const state = await bootstrapRuntime(stateOpts);
   const holder = new RuntimeHolder(state);
   const reloader = new ConfigHotReloader(holder, opts.configPath);
+
+  logStartupBanner(state);
 
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },

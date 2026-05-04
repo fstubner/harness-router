@@ -83,6 +83,22 @@ were ported to the new router shape).
 - The "harness × task_type" capability matrix and the `cli_capability`
   multipliers per harness. Those numbers were vibes, not measurements.
 
+### First-run UX
+
+- Default models in `CLI_DEFAULTS` now use each CLI's documented alias where
+  one exists (`sonnet` for Claude Code, `pro` for Gemini, `auto` for Cursor
+  and Copilot). Aliases auto-roll forward as providers ship new versions; full
+  IDs are still accepted via `model:` overrides for users who want to pin.
+- README now has a per-CLI model-name reference table covering Claude Code,
+  Codex, Gemini, Cursor, opencode, and Copilot CLI.
+- MCP server logs a one-line startup banner to stderr summarising reachable
+  services per tier and the active model priority. When zero services are
+  reachable, the banner points the user at `harness-router-mcp init`.
+- The "no available routes" error from the `code` tool now classifies the
+  cause (no services configured / nothing installed / everything rate-limited
+  / no service matches the priority list) instead of just dumping the full
+  breaker state JSON.
+
 ## [0.1.0] — 2026-05-01
 
 Initial public release.
