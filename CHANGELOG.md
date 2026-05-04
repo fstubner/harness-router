@@ -90,8 +90,15 @@ were ported to the new router shape).
   - Claude Desktop (`%APPDATA%\Claude\claude_desktop_config.json` on Windows,
     `~/Library/Application Support/Claude/...` on macOS, `~/.config/Claude/...`
     on Linux) — JSON, under `mcpServers["harness-router"]`.
-  - Cursor IDE (`~/.cursor/mcp.json`) — same JSON shape.
-  - Codex CLI / Desktop (`~/.codex/config.toml`) — TOML, `[mcp_servers.harness-router]`.
+  - Claude Code (the CLI / Anthropic's coding agent) — invokes
+    `claude mcp add harness-router --scope user -- npx -y harness-router-mcp mcp`
+    on your behalf. Claude Code owns its own MCP-server registry at
+    `~/.claude.json`, so we delegate to its CLI rather than poking the file
+    directly.
+  - Cursor IDE (`~/.cursor/mcp.json`) — same JSON shape as Claude Desktop.
+  - Codex CLI / Desktop / IDE extension (`~/.codex/config.toml`) — TOML,
+    `[mcp_servers.harness-router]`. All three Codex clients share this file
+    per [OpenAI's MCP docs](https://developers.openai.com/codex/mcp).
 - Idempotent: re-running on an already-installed host is a no-op. Preserves
   every other entry in the host's config (verified against real configs with
   six existing servers in Codex's TOML, custom HTTP-style entries in Cursor,

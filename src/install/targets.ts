@@ -18,11 +18,13 @@
  * file, different lifecycle, no overlap.
  */
 
+import { spawn } from "node:child_process";
 import { promises as fs, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
+import which from "which";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -250,6 +252,47 @@ async function tomlUninstall(p: string, name: string): Promise<InstallResult> {
 }
 
 // ---------------------------------------------------------------------------
+// Subprocess helper (Claude Code uses `claude mcp add` instead of a flat file)
+// ---------------------------------------------------------------------------
+
+async function runClaudeMcp(
+  args: string[],
+): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  // Use the absolute path returned by `which()` rather than relying on
+  // shell:true PATH-resolution. shell:true with args triggers Node's
+  // DEP0190 warning (args are concatenated unescaped → potential
+  // injection if entry.name has a space). Resolving to an absolute path
+  // removes the need for a shell entirely.
+  const claudeBin = findClaudeBinary();
+  if (!claudeBin) {
+    return { ok: false, stdout: "", stderr: "claude not on PATH" };
+  }
+  return new Promise((resolve) => {
+    const child = spawn(claudeBin, args, { shell: false });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (b: Buffer) => (stdout += b.toString()));
+    child.stderr?.on("data", (b: Buffer) => (stderr += b.toString()));
+    child.on("error", (err) => resolve({ ok: false, stdout, stderr: err.message }));
+    child.on("close", (code) => resolve({ ok: code === 0, stdout, stderr }));
+  });
+}
+
+function findClaudeBinary(): string | null {
+  // `which("claude")` handles all platform variants (PATHEXT on Windows,
+  // bare extensionless on POSIX). The `claude` shim could be a .cmd, .exe,
+  // a shell script, or a plain Node entrypoint — `which` finds whichever
+  // form is on PATH. We just need ONE of them present to know the host is
+  // installed.
+  try {
+    const found = which.sync("claude", { nothrow: true });
+    return found ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Per-host adapters
 // ---------------------------------------------------------------------------
 
@@ -307,6 +350,61 @@ const cursorTarget: InstallTarget = {
   },
 };
 
+const claudeCodeTarget: InstallTarget = {
+  id: "claude-code",
+  displayName: "Claude Code (CLI — user scope)",
+  configPath() {
+    // Detection signal: the `claude` CLI on PATH. The actual config file
+    // (`~/.claude.json`) is touched indirectly via `claude mcp add`, so we
+    // return that path for log lines but never read/write it ourselves.
+    if (!findClaudeBinary()) return null;
+    return path.join(homedir(), ".claude.json");
+  },
+  async install(entry) {
+    if (!findClaudeBinary()) {
+      return { ok: false, error: "Claude Code CLI is not installed (`claude` not on PATH)" };
+    }
+    const cfgPath = path.join(homedir(), ".claude.json");
+    // `claude mcp add` errors if the server is already registered. Best-effort
+    // remove first so re-runs are idempotent — ignore the remove failure if
+    // the entry didn't exist.
+    await runClaudeMcp(["mcp", "remove", entry.name]);
+    const args = [
+      "mcp",
+      "add",
+      entry.name,
+      "--scope",
+      "user",
+      ...(entry.env ? Object.entries(entry.env).flatMap(([k, v]) => ["-e", `${k}=${v}`]) : []),
+      "--",
+      entry.command,
+      ...entry.args,
+    ];
+    const result = await runClaudeMcp(args);
+    if (!result.ok) {
+      return { ok: false, path: cfgPath, error: result.stderr || "claude mcp add failed" };
+    }
+    return { ok: true, path: cfgPath, replaced: false };
+  },
+  async uninstall(name) {
+    if (!findClaudeBinary()) return { ok: true, alreadyPresent: false };
+    const cfgPath = path.join(homedir(), ".claude.json");
+    const result = await runClaudeMcp(["mcp", "remove", name]);
+    if (!result.ok) {
+      // claude mcp remove returns non-zero if the entry didn't exist — treat
+      // that as a no-op success rather than an error.
+      const notFound = /not found|no such/i.test(result.stdout + result.stderr);
+      if (notFound) return { ok: true, path: cfgPath, alreadyPresent: false };
+      return { ok: false, path: cfgPath, error: result.stderr || "claude mcp remove failed" };
+    }
+    return { ok: true, path: cfgPath, replaced: true };
+  },
+  printSnippet(entry) {
+    const cmd = `claude mcp add ${entry.name} --scope user -- ${entry.command} ${entry.args.join(" ")}`;
+    return ["# Claude Code uses its own CLI to register MCP servers. Run:", cmd].join("\n");
+  },
+};
+
 const codexTarget: InstallTarget = {
   id: "codex",
   displayName: "Codex (CLI + Desktop + IDE extension — shared config)",
@@ -346,6 +444,7 @@ const codexTarget: InstallTarget = {
 
 export const INSTALL_TARGETS: readonly InstallTarget[] = [
   claudeDesktopTarget,
+  claudeCodeTarget,
   cursorTarget,
   codexTarget,
 ];
