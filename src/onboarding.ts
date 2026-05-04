@@ -752,7 +752,7 @@ export function renderReport(reports: HarnessReport[], colors: boolean): string 
     lines.push(
       paint(
         "DIM",
-        "Re-run `harness-router-mcp init` after applying the next-step commands.",
+        "Re-run `harness-router-mcp doctor` after applying the next-step commands.",
         colors,
       ),
     );

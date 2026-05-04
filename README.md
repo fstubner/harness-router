@@ -94,7 +94,9 @@ Interactive wizard. Walks you through:
 4. **Pick MCP hosts** to wire `harness-router` into (Claude Desktop / Claude Code / Cursor / Codex).
 5. **Writes** the config to `~/.harness-router/config.yaml` and runs the install step for each chosen host.
 
-After it finishes, restart the host(s) to pick up the new MCP server. Run `harness-router-mcp init` to verify the underlying CLIs are authed and dispatching successfully.
+After it finishes, restart the host(s) to pick up the new MCP server. Run `harness-router-mcp doctor` to verify the underlying CLIs are authed and dispatching successfully.
+
+> Renames in v0.2.0: `init` → `doctor` (clearer intent — checks toolchain health, doesn't initialise anything new). `install --uninstall` → top-level `uninstall` command (separate verb, separate command).
 
 If you'd rather drive each step by hand:
 
@@ -106,7 +108,7 @@ harness-router-mcp install
 
 # Verify the underlying CLIs (claude, codex, cursor, gemini, opencode, copilot)
 # are installed, authed, and dispatching successfully.
-harness-router-mcp init
+harness-router-mcp doctor
 ```
 
 `install` writes `harness-router` into the right MCP-server namespace of each detected host:
@@ -126,14 +128,15 @@ Other `install` flags:
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--target <id>` | Limit to one host: `claude-desktop` / `claude-code` / `cursor` / `codex`.                                                                                   |
 | `--print`       | Print the config snippet for each host on stdout instead of writing files. Useful for hosts in non-default paths or for piping to a config-management tool. |
-| `--uninstall`   | Remove the `harness-router` entry from each detected host.                                                                                                  |
 | `--name <name>` | Override the entry name (default `harness-router`).                                                                                                         |
+
+To remove the entry: `harness-router-mcp uninstall` (same `--target` / `--name` flags apply).
 
 `init` still does what it always did:
 
 Per-harness checklist with three states (installed / verified / ready) and the exact next-step command for anything red. Runs a tiny ~5-token dispatch to verify each CLI's auth + JSON parsing actually works end-to-end.
 
-> **Inside an MCP host** (Claude Desktop, Cursor agent, etc.) the server logs a one-line startup banner to stderr summarising what it found — count of reachable services per tier, the active model priority, and a pointer back to `harness-router-mcp init` if nothing is reachable. Most MCP hosts surface stderr in their server logs (Claude Desktop: "View server logs"; Cursor: "MCP" panel), which is where to look when routing isn't doing what you expect.
+> **Inside an MCP host** (Claude Desktop, Cursor agent, etc.) the server logs a one-line startup banner to stderr summarising what it found — count of reachable services per tier, the active model priority, and a pointer back to `harness-router-mcp doctor` if nothing is reachable. Most MCP hosts surface stderr in their server logs (Claude Desktop: "View server logs"; Cursor: "MCP" panel), which is where to look when routing isn't doing what you expect.
 
 ```text
 claude_code  Claude Code CLI
@@ -404,8 +407,8 @@ for most third-party tools.
 ## CLI
 
 ```bash
-harness-router-mcp init                   # onboarding stack check (installed / verified / ready)
-harness-router-mcp init --install         # auto-run npm install -g for missing or upgradable harnesses
+harness-router-mcp doctor                   # onboarding stack check (installed / verified / ready)
+harness-router-mcp doctor --install         # auto-run npm install -g for missing or upgradable harnesses
 harness-router-mcp mcp                    # MCP server on stdio
 harness-router-mcp mcp --http 7330        # MCP server over streamable HTTP
 harness-router-mcp route "<prompt>"       # one-shot dispatch with live streaming

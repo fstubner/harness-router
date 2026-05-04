@@ -45,4 +45,4 @@ It fans the prompt to every available service in parallel and returns one result
 
 Before routing — or when something fails unexpectedly — call `dashboard` for a multi-line text status of every configured service (model, tier, quota, breaker state, the router's current pick). `get_quota_status` returns the same data as JSON for tooling.
 
-For first-time setup, run `harness-router-mcp init` from the terminal. It walks installed/verified/ready state per harness with exact next-step commands for anything red.
+For first-time setup, run `harness-router-mcp onboard` to wire the router into your MCP hosts. Run `harness-router-mcp doctor` afterwards (or any time something feels off) to verify each underlying CLI is installed, authed, and dispatching — it walks installed/verified/ready state per harness with exact next-step commands for anything red.

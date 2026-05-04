@@ -83,6 +83,22 @@ were ported to the new router shape).
 - The "harness × task_type" capability matrix and the `cli_capability`
   multipliers per harness. Those numbers were vibes, not measurements.
 
+### CLI renames
+
+- **`init` → `doctor`.** The `init` subcommand never created or initialised
+  anything — it probed installed CLIs, ran a tiny verify dispatch, and
+  reported red ✗ next-step commands for anything broken. Every other dev
+  tool calls that operation `doctor` (`brew doctor`, `flutter doctor`,
+  `claude doctor`), and "init" was actively misleading next to the new
+  `onboard` command (which is the actual "set up something new" verb).
+- **`install --uninstall` → `uninstall` (top-level command).** Splitting
+  the inverse verb into its own subcommand is clearer in `--help`, easier
+  to type, and removes the inverted-logic flag. Same `--target` / `--name`
+  flags apply to both.
+- All in-source pointers updated: the "no routes" error classifier, the
+  MCP server's startup banner, the wizard's exit hint, the SERVER_INSTRUCTIONS
+  block, README, CLAUDE.md, and the failing-route docstring in quota.ts.
+
 ### Onboarding wizard
 
 - **`harness-router-mcp onboard`** — interactive first-run wizard built on

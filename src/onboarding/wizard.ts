@@ -149,7 +149,8 @@ export async function runWizard(opts: RunWizardOpts = {}): Promise<number> {
     out.write(
       "  No supported CLIs found on PATH. Install at least one of:\n" +
         "    claude, codex, cursor's `agent`, gemini, opencode, copilot\n" +
-        "  Then re-run `harness-router-mcp onboard`.\n",
+        "  Then re-run `harness-router-mcp onboard`. (Or run `harness-router-mcp doctor`\n" +
+        "  for a per-CLI install/upgrade checklist.)\n",
     );
     return 1;
   }
@@ -284,7 +285,7 @@ export async function runWizard(opts: RunWizardOpts = {}): Promise<number> {
     }
     out.write(
       "\n  Restart any host you just wired so it picks up harness-router.\n" +
-        "  Run `harness-router-mcp init` to verify the underlying CLIs are authed and dispatching.\n",
+        "  Run `harness-router-mcp doctor` to verify the underlying CLIs are authed and dispatching.\n",
     );
   }
 

@@ -220,10 +220,10 @@ async function cmdDashboard(
 }
 
 // ---------------------------------------------------------------------------
-// Command — init (light onboarding)
+// Command — doctor (health check across installed AI CLIs)
 // ---------------------------------------------------------------------------
 
-async function cmdInit(
+async function cmdDoctor(
   configPath: string | undefined,
   installFlag: boolean,
   noVerify: boolean,
@@ -391,7 +391,7 @@ async function cmdInstall(opts: InstallCmdOpts): Promise<number> {
   if (allOk && !opts.uninstall) {
     process.stdout.write(
       "\nDone. Restart the host(s) to pick up the new MCP server.\n" +
-        "Verify the underlying CLIs with `harness-router-mcp init`.\n",
+        "Verify the underlying CLIs with `harness-router-mcp doctor`.\n",
     );
   }
   return allOk ? 0 : 1;
@@ -406,14 +406,15 @@ function printUsage(): void {
       "  harness-router-mcp onboard              Interactive first-run setup: detect CLIs, pick models",
       "                                            + priority, choose MCP hosts to wire up.",
       "  harness-router-mcp onboard --skip-install  Just write the config; don't install into MCP hosts.",
-      "  harness-router-mcp init                 Onboarding stack check (installed/verified per harness).",
-      "  harness-router-mcp init --install       Try `npm install -g` for any missing/upgradable harness.",
-      "  harness-router-mcp init --harness <id>  Limit to one harness (claude_code|codex|cursor|gemini_cli|opencode|copilot).",
-      "  harness-router-mcp init --no-verify     Skip the live ~5-token dispatch probe.",
+      "  harness-router-mcp doctor               Health check across installed AI CLIs (installed/authed/dispatching).",
+      "  harness-router-mcp doctor --install     Try `npm install -g` for any missing/upgradable harness.",
+      "  harness-router-mcp doctor --harness <id>  Limit to one harness (claude_code|codex|cursor|gemini_cli|opencode|copilot).",
+      "  harness-router-mcp doctor --no-verify   Skip the live ~5-token dispatch probe.",
       "  harness-router-mcp install              Detect MCP hosts and add `harness-router` entry to each.",
       "  harness-router-mcp install --target <id>  Install into one host only (claude-desktop|claude-code|cursor|codex).",
       "  harness-router-mcp install --print      Print the config snippet for each host (no file writes).",
-      "  harness-router-mcp install --uninstall  Remove the `harness-router` entry from each host.",
+      "  harness-router-mcp uninstall            Remove the `harness-router` entry from each host.",
+      "  harness-router-mcp uninstall --target <id>  Remove from one host only.",
       '  harness-router-mcp route "<prompt>"     Pick a service and dispatch (live streaming).',
       "  harness-router-mcp list-services        Show enabled services.",
       "  harness-router-mcp dashboard            Show quota + breaker status (one-shot).",
@@ -482,7 +483,7 @@ export async function main(argv: string[]): Promise<number> {
       }
       return cmdRoute(prompt, configPath);
     }
-    case "init": {
+    case "doctor": {
       const installFlag = Boolean(values.install);
       const noVerify = Boolean(values["no-verify"]);
       const harnessArg = values.harness as string | undefined;
@@ -491,19 +492,26 @@ export async function main(argv: string[]): Promise<number> {
         const known = HARNESS_SPECS.map((s) => s.harness);
         if (!known.includes(harnessArg)) {
           process.stderr.write(
-            `init --harness: unknown harness "${harnessArg}". Expected one of: ${known.join(", ")}\n`,
+            `doctor --harness: unknown harness "${harnessArg}". Expected one of: ${known.join(", ")}\n`,
           );
           return 1;
         }
         harnessFilter = harnessArg;
       }
-      return cmdInit(configPath, installFlag, noVerify, harnessFilter);
+      return cmdDoctor(configPath, installFlag, noVerify, harnessFilter);
     }
     case "install": {
       const opts: InstallCmdOpts = {};
       if (typeof values.target === "string") opts.target = values.target;
       if (values.print === true) opts.print = true;
-      if (values.uninstall === true) opts.uninstall = true;
+      if (typeof values.name === "string") opts.name = values.name;
+      return cmdInstall(opts);
+    }
+    case "uninstall": {
+      // Same code path as `install` but with the verb flipped. Doesn't
+      // accept `--print` (no snippet to print when removing).
+      const opts: InstallCmdOpts = { uninstall: true };
+      if (typeof values.target === "string") opts.target = values.target;
       if (typeof values.name === "string") opts.name = values.name;
       return cmdInstall(opts);
     }

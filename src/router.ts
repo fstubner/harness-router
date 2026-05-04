@@ -330,7 +330,7 @@ export class Router {
             success: false,
             error:
               `No available routes — ${reasonPart}. ` +
-              "Run `harness-router-mcp init` to see what's installed and what's missing.",
+              "Run `harness-router-mcp doctor` to see what's installed and what's missing.",
           };
           yield { event: { type: "completion", result }, decision: null };
         }

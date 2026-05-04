@@ -40,7 +40,7 @@ const SERVER_INSTRUCTIONS =
   "`get_quota_status` (JSON) to inspect routing state. Pre-built prompts " +
   "(route-task, compare-models, health-check) are available via the host's " +
   "prompt picker. If no services are configured or reachable, run " +
-  "`harness-router-mcp init` from the terminal to see what's missing.";
+  "`harness-router-mcp doctor` from the terminal to see what's missing.";
 
 // ---------------------------------------------------------------------------
 // Builder — shared between stdio and HTTP entry points
@@ -80,7 +80,7 @@ function logStartupBanner(state: RuntimeState): void {
   process.stderr.write(`[harness-router-mcp] ready: ${ready}\n`);
   if (reachable.length === 0) {
     process.stderr.write(
-      "[harness-router-mcp] no services reachable. Run `harness-router-mcp init` " +
+      "[harness-router-mcp] no services reachable. Run `harness-router-mcp doctor` " +
         "to see what needs installing or authenticating.\n",
     );
   }

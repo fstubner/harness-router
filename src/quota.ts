@@ -321,7 +321,7 @@ export class QuotaCache {
    * sequentially consistent.
    *
    * Cross-process safety: NOT safe. If two processes (e.g. an MCP server
-   * and a parallel `harness-router-mcp init` invocation) both write at the
+   * and a parallel `harness-router-mcp doctor` invocation) both write at the
    * same instant, the read-then-rename window allows the later writer to
    * overwrite the earlier writer's counts for any service it doesn't
    * itself touch. Audit pass A flagged this. The exposure is bounded —
