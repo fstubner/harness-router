@@ -8,53 +8,41 @@ Route any task involving: writing code, fixing bugs, running tests, code review,
 
 ## How to route
 
-Use `code_auto` with a `task_type` hint that matches what the task actually is:
+Call the `code` tool. It walks the user's `model_priority` list, preferring subscription-backed services over metered API for the same model.
 
 ```
-code_auto(
+code(
   prompt="<full task description>",
-  workingDir="<absolute path to project>",
-  hints={ taskType: "execute" | "plan" | "review" }
+  workingDir="<absolute path to project>",   // optional; defaults to cwd
+  files=[<absolute paths>],                  // optional, max 256 entries
+  hints={                                    // optional
+    model: "<canonical model id>",   // bump this model to the front of the priority list
+    service: "<service name>"        // force a specific dispatcher (bypasses priority walk)
+  }
 )
 ```
 
-| task_type | Use for                                                         | Best harness       |
-| --------- | --------------------------------------------------------------- | ------------------ |
-| execute   | Running tests, applying fixes, autonomous multi-step coding     | codex → cursor     |
-| plan      | Architecture, design decisions, "how should we build X"         | claude_code (Opus) |
-| review    | Code review, security audit, explain code, refactor suggestions | claude_code (Opus) |
+The router's algorithm is short: walk `model_priority`. For each model, try every subscription-tier service (highest quota first), then every metered-tier service. When all routes for a model fail, drop to the next model.
 
-## Model escalation (claude_code harness)
+## Picking a different model on the fly
 
-A `claude_code` service can auto-escalate to a stronger model on reasoning-heavy task types:
+The model is what you care about; the CLI is plumbing. Two ways to influence:
 
-- `taskType=execute` → Sonnet (fast, cheap)
-- `taskType=plan|review` → Opus (extended thinking)
-
-This is configured per-service in `config.yaml` via `escalate_model` + `escalate_on`. `code_auto` resolves the right model before dispatch — no manual switching.
+- `hints.model` — bump a specific model to the front of the priority list. Falls through normally if it has no usable routes. Use this when the prompt benefits from a heavier model (e.g. architectural reasoning).
+- `hints.service` — force a specific dispatcher entirely (bypasses the model walk). Use sparingly; you're overriding quota tracking.
 
 ## For multiple perspectives
 
-Use `code_mixture` when the task benefits from different harness opinions (architecture decisions, design tradeoffs, anything where blind spots matter):
+Call `code_mixture` when the task benefits from contrasts between services (architecture decisions, design tradeoffs, anything where blind spots matter):
 
 ```
-code_mixture(prompt="<task>", hints={ taskType: "plan" })
+code_mixture(prompt="<task>")
 ```
 
-It fans the prompt out to every available harness in parallel and returns each output for you to synthesize.
-
-## Per-harness routing
-
-When you specifically need one harness's strengths, use the explicit tools — they bypass the router and pick the best service of that harness:
-
-- `code_with_claude` — file/Bash/Edit tools, strong on plan & review
-- `code_with_cursor` — codebase indexing, strong on execute in editor flows
-- `code_with_codex` — full-auto execution loop, strongest on pure execute
-- `code_with_gemini` — 1M+ token context, strong on review/plan over large codebases
-- `code_with_opencode` — provider-agnostic OSS agent, multi-subscription per install
-- `code_with_copilot` — GitHub Copilot CLI, GitHub-tooling-aware (gh / repo / PR context)
-- For third-party CLIs registered via YAML, route through `code_auto({hints:{harness:"<your-id>"}})` — there's no auto-registered `code_with_<custom>` tool
+It fans the prompt to every available service in parallel and returns one result per service for you to synthesize.
 
 ## Health check
 
-If unsure about service availability before routing, call `dashboard` (or `get_quota_status` / `list_available_services` for structured data). For first-time setup, run `harness-router-mcp init` from the terminal — it walks through installed/verified state per harness with exact next-step commands.
+Before routing — or when something fails unexpectedly — call `dashboard` for a multi-line text status of every configured service (model, tier, quota, breaker state, the router's current pick). `get_quota_status` returns the same data as JSON for tooling.
+
+For first-time setup, run `harness-router-mcp init` from the terminal. It walks installed/verified/ready state per harness with exact next-step commands for anything red.
