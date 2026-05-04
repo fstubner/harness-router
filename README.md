@@ -80,14 +80,32 @@ Requires **Node ≥ 20** and at least one installed CLI: `claude`, `codex`, `gem
 
 ## First-run setup
 
+The fast path:
+
 ```bash
-# 1. Wire harness-router-mcp into your MCP hosts (Claude Desktop, Cursor, Codex).
-#    Detects which hosts are installed, edits each one's config in place,
-#    skips anything not present. Idempotent.
+harness-router-mcp onboard
+```
+
+Interactive wizard. Walks you through:
+
+1. **Detect** which AI CLIs are installed on your machine.
+2. **Pick the default model** — what `code` reaches for first when no override is passed.
+3. **Pick fallback models** — the rest of the priority list, used when the default is exhausted.
+4. **Pick MCP hosts** to wire `harness-router` into (Claude Desktop / Claude Code / Cursor / Codex).
+5. **Writes** the config to `~/.harness-router/config.yaml` and runs the install step for each chosen host.
+
+After it finishes, restart the host(s) to pick up the new MCP server. Run `harness-router-mcp init` to verify the underlying CLIs are authed and dispatching successfully.
+
+If you'd rather drive each step by hand:
+
+```bash
+# Wire harness-router-mcp into your MCP hosts (Claude Desktop, Claude Code, Cursor, Codex).
+# Detects which hosts are installed, edits each one's config in place,
+# skips anything not present. Idempotent.
 harness-router-mcp install
 
-# 2. Verify the underlying CLIs (claude, codex, cursor, gemini, opencode, copilot)
-#    are installed, authed, and dispatching successfully.
+# Verify the underlying CLIs (claude, codex, cursor, gemini, opencode, copilot)
+# are installed, authed, and dispatching successfully.
 harness-router-mcp init
 ```
 

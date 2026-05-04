@@ -83,6 +83,33 @@ were ported to the new router shape).
 - The "harness × task_type" capability matrix and the `cli_capability`
   multipliers per harness. Those numbers were vibes, not measurements.
 
+### Onboarding wizard
+
+- **`harness-router-mcp onboard`** — interactive first-run wizard built on
+  `@inquirer/prompts`. Walks the user through:
+  1. Detecting which AI CLIs are installed (Claude Code, Codex, Cursor,
+     Gemini, opencode, Copilot).
+  2. Picking the **default model** — what `code` reaches for first.
+  3. Picking optional **fallback models** for the priority list.
+  4. Picking which MCP hosts to wire `harness-router` into (Claude Desktop,
+     Claude Code, Cursor, Codex).
+  5. Writing `~/.harness-router/config.yaml` with the chosen priority + one
+     service per detected harness, each pinned to the highest-priority
+     canonical model that harness can serve.
+  6. Running the `install` step for each chosen host.
+- The wizard is built on a hardcoded model catalog (`src/onboarding/models.ts`)
+  derived from each provider's documentation, since most agentic CLIs only
+  expose model selection through interactive `/model` pickers — there's no
+  programmatic enumeration we can shell out to. Catalog covers the model
+  surfaces we documented in the README's per-CLI reference table.
+- `loadConfig()` now falls back to `~/.harness-router/config.yaml` when no
+  explicit `--config` is passed and `$HARNESS_ROUTER_CONFIG` is unset, so
+  the wizard's output is picked up automatically by `mcp` / `route` / etc.
+- New dep: `@inquirer/prompts` (~50kB, ESM-native, modern).
+- Pure config-builder (`buildWizardConfig`, `renderWizardYaml`) is unit-tested
+  in `tests/onboarding/wizard.test.ts`. The interactive parts can't be tested
+  without a TTY but are self-contained.
+
 ### Install command
 
 - **`harness-router-mcp install`** — new CLI subcommand that wires the MCP

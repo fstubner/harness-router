@@ -42,6 +42,7 @@ import {
   type InstallTarget,
   type McpServerEntry,
 } from "./install/targets.js";
+import { runWizard } from "./onboarding/wizard.js";
 
 // ---------------------------------------------------------------------------
 // Commands (R1 + R3 streaming)
@@ -402,12 +403,15 @@ function printUsage(): void {
       "harness-router-mcp — route coding tasks across AI CLI harnesses",
       "",
       "Usage:",
+      "  harness-router-mcp onboard              Interactive first-run setup: detect CLIs, pick models",
+      "                                            + priority, choose MCP hosts to wire up.",
+      "  harness-router-mcp onboard --skip-install  Just write the config; don't install into MCP hosts.",
       "  harness-router-mcp init                 Onboarding stack check (installed/verified per harness).",
       "  harness-router-mcp init --install       Try `npm install -g` for any missing/upgradable harness.",
       "  harness-router-mcp init --harness <id>  Limit to one harness (claude_code|codex|cursor|gemini_cli|opencode|copilot).",
       "  harness-router-mcp init --no-verify     Skip the live ~5-token dispatch probe.",
       "  harness-router-mcp install              Detect MCP hosts and add `harness-router` entry to each.",
-      "  harness-router-mcp install --target <id>  Install into one host only (claude-desktop|cursor|codex).",
+      "  harness-router-mcp install --target <id>  Install into one host only (claude-desktop|claude-code|cursor|codex).",
       "  harness-router-mcp install --print      Print the config snippet for each host (no file writes).",
       "  harness-router-mcp install --uninstall  Remove the `harness-router` entry from each host.",
       '  harness-router-mcp route "<prompt>"     Pick a service and dispatch (live streaming).',
@@ -443,6 +447,7 @@ export async function main(argv: string[]): Promise<number> {
       print: { type: "boolean" },
       uninstall: { type: "boolean" },
       name: { type: "string" },
+      "skip-install": { type: "boolean" },
     },
     allowPositionals: true,
     strict: false,
@@ -501,6 +506,12 @@ export async function main(argv: string[]): Promise<number> {
       if (values.uninstall === true) opts.uninstall = true;
       if (typeof values.name === "string") opts.name = values.name;
       return cmdInstall(opts);
+    }
+    case "onboard": {
+      const wizardOpts: { configPath?: string; skipInstall?: boolean } = {};
+      if (typeof values.config === "string") wizardOpts.configPath = values.config;
+      if (values["skip-install"] === true) wizardOpts.skipInstall = true;
+      return runWizard(wizardOpts);
     }
     case "list-services":
       return cmdListServices(configPath);

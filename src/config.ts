@@ -14,6 +14,8 @@
  */
 
 import { promises as fs } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import yaml from "js-yaml";
 import which from "which";
 
@@ -545,11 +547,20 @@ export interface LoadConfigOptions {
   whichFn?: WhichFn;
 }
 
+/** Default config location written by the `onboard` wizard. */
+function defaultUserConfigPath(): string {
+  return join(homedir(), ".harness-router", "config.yaml");
+}
+
 /**
  * Load a RouterConfig.
  *
- * If `path` is omitted (or the file doesn't exist), auto-detect CLIs on
- * PATH. If the file has a `services:` key, parse it in legacy mode.
+ * Path resolution priority:
+ *   1. Explicit `path` arg (or `$HARNESS_ROUTER_CONFIG`).
+ *   2. `~/.harness-router/config.yaml` if it exists (the wizard's output).
+ *   3. Auto-detect CLIs on PATH with built-in defaults.
+ *
+ * If the resolved file has a `services:` key, parse it in legacy/full mode.
  * Otherwise auto-detect and merge `overrides`. `${ENV_VAR}` interpolation
  * is supported throughout.
  */
@@ -559,10 +570,23 @@ export async function loadConfig(
 ): Promise<RouterConfig> {
   const whichFn = opts.whichFn ?? defaultWhich;
 
-  let raw: Record<string, unknown> = {};
-  if (path) {
+  // Resolve the config file: explicit path → wizard's well-known location →
+  // none. Each step short-circuits when the previous resolved.
+  let resolvedPath: string | undefined = path;
+  if (resolvedPath === undefined) {
+    const userPath = defaultUserConfigPath();
     try {
-      const text = await fs.readFile(path, "utf-8");
+      await fs.access(userPath);
+      resolvedPath = userPath;
+    } catch {
+      /* nothing at the well-known path; fall through to auto-detect */
+    }
+  }
+
+  let raw: Record<string, unknown> = {};
+  if (resolvedPath) {
+    try {
+      const text = await fs.readFile(resolvedPath, "utf-8");
       const parsed = yaml.load(text);
       if (parsed && typeof parsed === "object") {
         raw = interpolateTree(parsed) as Record<string, unknown>;
