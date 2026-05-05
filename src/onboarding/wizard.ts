@@ -30,7 +30,13 @@ import {
   type InstallTarget,
   type McpServerEntry,
 } from "../install/targets.js";
-import { aggregateCatalog, cliModelFor, MODEL_CATALOG } from "./models.js";
+import {
+  aggregateCatalog,
+  cliModelFor,
+  findProviderMatches,
+  MODEL_CATALOG,
+  type ProviderMatches,
+} from "./models.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -39,8 +45,14 @@ import { aggregateCatalog, cliModelFor, MODEL_CATALOG } from "./models.js";
 export interface WizardConfig {
   /** Canonical model IDs in priority order (head = default). */
   modelPriority: string[];
-  /** One service per detected harness; key is the service name. */
-  services: Record<string, WizardService>;
+  /** One service per detected harness + per (provider × matching priority model). */
+  services: Record<string, WizardService | WizardMeteredService>;
+  /**
+   * Optional default service whitelist for `code_mixture`. When the agent
+   * doesn't pass `services` or `models` to the tool, the router uses this
+   * list. When absent, mixture defaults to "every available service."
+   */
+  mixtureDefault?: string[];
 }
 
 export interface WizardService {
@@ -55,6 +67,18 @@ export interface WizardService {
   tier: "subscription";
 }
 
+export interface WizardMeteredService {
+  enabled: true;
+  type: "openai_compatible";
+  base_url: string;
+  api_key: string;
+  /** Canonical name (matches modelPriority entry). */
+  model: string;
+  /** API-specific model ID. Defaults to canonical when no override is known. */
+  cli_model: string;
+  tier: "metered";
+}
+
 // ---------------------------------------------------------------------------
 // Pure logic — buildable without I/O so it's testable
 // ---------------------------------------------------------------------------
@@ -62,20 +86,34 @@ export interface WizardService {
 /**
  * Build a WizardConfig from the wizard's collected state.
  *
- * For each detected harness, generate one service whose `model` is the
- * highest-priority canonical model the harness can serve. Harnesses that
- * can't serve any of the user's chosen priorities are dropped — including
- * them with a non-matching model would never route.
+ * Subscription services: for each detected harness, generate one service
+ * whose `model` is the highest-priority canonical the harness can serve.
+ * Harnesses that can't serve any of the user's chosen priorities are
+ * dropped — including them with a non-matching model would never route.
+ *
+ * Metered services: for each (provider × matching priority model) the
+ * user opted into, generate one `type: openai_compatible` service with
+ * `tier: metered`. The api_key is written as `${ENV_VAR}` so the loader's
+ * env-interpolation step resolves it at startup (no secrets in the YAML).
+ *
+ * Mixture default: optional list of service names that `code_mixture`
+ * fans out to by default. When omitted, mixture defaults to "every
+ * available service" (the historical behaviour).
  */
 export function buildWizardConfig(input: {
   modelPriority: readonly string[];
   detectedHarnesses: readonly { id: HarnessId; command: string }[];
+  /** Providers the user opted in for metered fallback. */
+  meteredProviders?: readonly ProviderMatches[];
+  /** Service names code_mixture fans out to by default. */
+  mixtureDefault?: readonly string[];
 }): WizardConfig {
-  const services: Record<string, WizardService> = {};
+  const services: Record<string, WizardService | WizardMeteredService> = {};
+
+  // 1. Subscription services from detected harnesses
   for (const h of input.detectedHarnesses) {
     const catalog = MODEL_CATALOG[h.id] ?? [];
     if (catalog.length === 0) continue;
-    // Find the first priority entry this harness can serve.
     const match = input.modelPriority.find(
       (canonical) => cliModelFor(h.id, canonical) !== undefined,
     );
@@ -90,34 +128,78 @@ export function buildWizardConfig(input: {
       tier: "subscription",
     };
   }
-  return {
+
+  // 2. Metered services per (provider × matching priority model)
+  for (const m of input.meteredProviders ?? []) {
+    for (const canonical of m.models) {
+      // service name pattern: anthropic_api_opus, openai_api_gpt-5_4, …
+      // strip dots from canonical for the YAML key — keeps it valid.
+      const safeKey = canonical.replace(/\./g, "_");
+      const name = `${m.provider.id}_${safeKey}`;
+      services[name] = {
+        enabled: true,
+        type: "openai_compatible",
+        base_url: m.provider.baseUrl,
+        api_key: `\${${m.provider.envVar}}`,
+        model: canonical,
+        cli_model: m.provider.cliModelFor(canonical) ?? canonical,
+        tier: "metered",
+      };
+    }
+  }
+
+  const cfg: WizardConfig = {
     modelPriority: input.modelPriority.slice(),
     services,
   };
+  if (input.mixtureDefault && input.mixtureDefault.length > 0) {
+    cfg.mixtureDefault = input.mixtureDefault.slice();
+  }
+  return cfg;
 }
 
 /** Render a WizardConfig as a YAML string. */
 export function renderWizardYaml(config: WizardConfig): string {
-  return yaml.dump(
-    {
-      model_priority: config.modelPriority,
-      services: Object.fromEntries(
-        Object.entries(config.services).map(([name, svc]) => [
+  const root: Record<string, unknown> = {
+    model_priority: config.modelPriority,
+    services: Object.fromEntries(
+      Object.entries(config.services).map(([name, svc]) => {
+        // Two distinct shapes — CLI vs openai_compatible. js-yaml serialises
+        // each by passing through the object, so build per-shape rather than
+        // generically to keep the YAML clean.
+        if (svc.type === "cli") {
+          return [
+            name,
+            {
+              enabled: svc.enabled,
+              type: svc.type,
+              harness: svc.harness,
+              command: svc.command,
+              model: svc.model,
+              cli_model: svc.cli_model,
+              tier: svc.tier,
+            },
+          ];
+        }
+        return [
           name,
           {
             enabled: svc.enabled,
             type: svc.type,
-            harness: svc.harness,
-            command: svc.command,
+            base_url: svc.base_url,
+            api_key: svc.api_key,
             model: svc.model,
             cli_model: svc.cli_model,
             tier: svc.tier,
           },
-        ]),
-      ),
-    },
-    { lineWidth: 100, noRefs: true },
-  );
+        ];
+      }),
+    ),
+  };
+  if (config.mixtureDefault && config.mixtureDefault.length > 0) {
+    root.mixture_default = config.mixtureDefault;
+  }
+  return yaml.dump(root, { lineWidth: 100, noRefs: true });
 }
 
 /** Default location for the wizard's output. */
@@ -214,7 +296,67 @@ export async function runWizard(opts: RunWizardOpts = {}): Promise<number> {
 
   const modelPriority = [defaultChoice, ...fallbacks];
 
-  // ---- 4. Pick which MCP hosts to wire up ---------------------------------
+  // ---- 4. Metered fallback (offer per detected API key) ------------------
+  // Closes the credibility gap: the README pitches "subscriptions before
+  // metered API" but without this step the wizard never produces a metered
+  // service, so the metered tier in the router is dead code by default.
+  const matches = findProviderMatches(modelPriority);
+  let chosenProviders: ProviderMatches[] = [];
+  if (matches.length > 0) {
+    out.write("\n  Detected API keys for fallback providers:\n");
+    for (const m of matches) {
+      out.write(
+        `    • ${m.provider.displayName} (${m.provider.envVar}) → can serve: ${m.models.join(", ")}\n`,
+      );
+    }
+    const chosen = await checkbox<string>({
+      message: "Add metered fallback services? (used only when subscription routes are exhausted)",
+      choices: matches.map((m) => ({
+        name: `${m.provider.displayName} for [${m.models.join(", ")}]`,
+        value: m.provider.id,
+        checked: true,
+      })),
+    });
+    chosenProviders = matches.filter((m) => chosen.includes(m.provider.id));
+  } else {
+    out.write(
+      "\n  No metered-API env vars detected (looked for ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY).\n" +
+        "  Skipping metered fallback — set one and re-run if you want pay-per-token fallback.\n",
+    );
+  }
+
+  // ---- 5. Mixture default (which services for code_mixture by default) ----
+  // Service names we're about to write. Compute now so the picker shows
+  // them in their final form.
+  const allServiceNames: string[] = [];
+  for (const id of detectedIds) {
+    if (MODEL_CATALOG[id] && cliModelFor(id, defaultChoice) !== undefined) allServiceNames.push(id);
+    else if (MODEL_CATALOG[id] && fallbacks.some((f) => cliModelFor(id, f) !== undefined)) {
+      allServiceNames.push(id);
+    }
+  }
+  for (const m of chosenProviders) {
+    for (const canonical of m.models) {
+      allServiceNames.push(`${m.provider.id}_${canonical.replace(/\./g, "_")}`);
+    }
+  }
+
+  let mixtureDefault: string[] = [];
+  if (allServiceNames.length > 1) {
+    mixtureDefault = await checkbox<string>({
+      message:
+        "For `code_mixture` (fan-out parallel comparison), which services by default? (skip = all available)",
+      choices: allServiceNames.map((name) => ({
+        name,
+        value: name,
+        checked: true,
+      })),
+    });
+    // Empty = "all available" (router default), so don't bother writing.
+    if (mixtureDefault.length === allServiceNames.length) mixtureDefault = [];
+  }
+
+  // ---- 6. Pick which MCP hosts to wire up ---------------------------------
   let chosenTargets: InstallTarget[] = [];
   if (!opts.skipInstall) {
     const presentTargets = INSTALL_TARGETS.filter((t) => t.configPath() !== null);
@@ -241,13 +383,16 @@ export async function runWizard(opts: RunWizardOpts = {}): Promise<number> {
     const spec = reports.find((x) => x.harness === r.harness);
     return { id: r.harness, command: spec?.installCommand?.split(" ")[0] ?? r.harness };
   });
-  const config = buildWizardConfig({
+  const buildOpts: Parameters<typeof buildWizardConfig>[0] = {
     modelPriority,
     detectedHarnesses: detectedForConfig.map((d) => ({
       id: d.id,
       command: harnessCommand(d.id),
     })),
-  });
+  };
+  if (chosenProviders.length > 0) buildOpts.meteredProviders = chosenProviders;
+  if (mixtureDefault.length > 0) buildOpts.mixtureDefault = mixtureDefault;
+  const config = buildWizardConfig(buildOpts);
   const cfgPath = opts.configPath ?? defaultConfigPath();
   const yamlText = renderWizardYaml(config);
 

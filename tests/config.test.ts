@@ -163,6 +163,47 @@ endpoints:
     expect(cfg.services.ollama!.baseUrl).toBe("http://localhost:11434/v1");
     expect(cfg.services.ollama!.tier).toBe("metered");
   });
+
+  it("picks up mixture_default from auto-detect YAML", async () => {
+    const yamlText = `
+mixture_default: [claude_code, gemini_cli]
+`;
+    const p = await writeTmpYaml("mixdef.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: allCliFound });
+    expect(cfg.mixtureDefault).toEqual(["claude_code", "gemini_cli"]);
+  });
+
+  it("picks up mixture_default from legacy full-format YAML", async () => {
+    const yamlText = `
+model_priority: [opus]
+mixture_default: [alpha]
+services:
+  alpha:
+    enabled: true
+    type: cli
+    command: alpha-bin
+    model: opus
+    tier: subscription
+`;
+    const p = await writeTmpYaml("mixdef-legacy.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(cfg.mixtureDefault).toEqual(["alpha"]);
+  });
+
+  it("treats missing mixture_default as undefined (not an empty list)", async () => {
+    const cfg = await loadConfig(undefined, { whichFn: allCliFound });
+    expect(cfg.mixtureDefault).toBeUndefined();
+  });
+
+  it("ignores non-string entries in mixture_default", async () => {
+    const yamlText = `
+mixture_default: [claude_code, 42, null, gemini_cli]
+`;
+    const p = await writeTmpYaml("mixdef-bad.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: allCliFound });
+    // Bad entries dropped; only string survivors retained.
+    expect(cfg.mixtureDefault).toEqual(["claude_code", "gemini_cli"]);
+  });
 });
 
 describe("loadConfig — ${ENV_VAR} interpolation", () => {

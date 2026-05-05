@@ -40,8 +40,12 @@ agent panel, Claude Code, Codex desktop):
 - **`code`** — main routing tool. Walks your model priority + tier list and
   dispatches. Hints: `model` (bump a model to the front) or `service` (force a
   specific CLI).
-- **`code_mixture`** — fan a prompt out to every available service in parallel.
-  One result per service; you synthesise.
+- **`code_mixture`** — fan a prompt out to multiple services in parallel.
+  One result per service; you synthesise. Pick the candidate set with
+  `services: [...]` (named dispatchers) or `models: [...]` (canonical model
+  IDs — the router resolves each to a service, subscription preferred).
+  When neither is passed, falls back to `mixture_default` from `config.yaml`,
+  then to every available service.
 - **`dashboard`** — text status of every configured service: model, tier
   (subscription / metered), quota left, breaker state, the router's current pick.
 - **`get_quota_status`** — JSON version of the dashboard, for tooling.
@@ -91,8 +95,16 @@ Interactive wizard. Walks you through:
 1. **Detect** which AI CLIs are installed on your machine.
 2. **Pick the default model** — what `code` reaches for first when no override is passed.
 3. **Pick fallback models** — the rest of the priority list, used when the default is exhausted.
-4. **Pick MCP hosts** to wire `harness-router` into (Claude Desktop / Claude Code / Cursor / Codex).
-5. **Writes** the config to `~/.harness-router/config.yaml` and runs the install step for each chosen host.
+4. **Add metered API fallback** _(optional)_ — when `ANTHROPIC_API_KEY` /
+   `OPENAI_API_KEY` / `GEMINI_API_KEY` is set, offers to add one
+   `tier: metered` service per (provider × matching priority model).
+   Subscriptions are still tried first; metered is the fallback. The api
+   key is written as `${VAR}` — env-interpolation, never the raw value.
+5. **Set the `code_mixture` default** _(optional)_ — pick which services
+   `code_mixture` fans out to by default when the agent doesn't pass
+   `services` or `models`.
+6. **Pick MCP hosts** to wire `harness-router` into (Claude Desktop / Claude Code / Cursor / Codex).
+7. **Writes** the config to `~/.harness-router/config.yaml` and runs the install step for each chosen host.
 
 After it finishes, restart the host(s) to pick up the new MCP server. Run `harness-router-mcp doctor` to verify the underlying CLIs are authed and dispatching successfully.
 

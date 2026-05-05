@@ -86,7 +86,19 @@ const mixtureInputShape = {
     .array(z.string().max(MAX_PATH_LEN))
     .max(MAX_FILES)
     .optional()
-    .describe("Optional subset of service names — defaults to every available service."),
+    .describe(
+      "Subset of service names. When omitted, falls back to the wizard-configured " +
+        "`mixture_default` from config.yaml, then to every available service.",
+    ),
+  models: z
+    .array(z.string().max(MAX_PATH_LEN))
+    .max(MAX_FILES)
+    .optional()
+    .describe(
+      "Alternative axis: list of canonical model names. The router resolves each to one " +
+        "service (highest-priority subscription route per model). Use this when you want to " +
+        "compare specific models rather than specific services. Mutually exclusive with `services`.",
+    ),
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -303,15 +315,77 @@ export async function handleCodeMixture(
   return withMcpToolSpan({ "tool.name": "code_mixture" }, async () => {
     await ensureFreshConfig(deps.reloader);
     const state = deps.holder.state;
-    const requested = new Set(input.services ?? []);
     const progressToken = extra?._meta?.progressToken;
     const counter = { value: 0 };
+
+    const servicesAxis = input.services ?? [];
+    const modelsAxis = input.models ?? [];
+
+    // Axes are mutually exclusive — one keys on services, the other on models.
+    if (servicesAxis.length > 0 && modelsAxis.length > 0) {
+      return {
+        results: [],
+        error:
+          "`services` and `models` are mutually exclusive — pass at most one. " +
+          "Use `services` to name dispatchers directly; use `models` to name " +
+          "canonical model IDs and let the router pick a service for each.",
+      };
+    }
+
+    // Resolve the candidate whitelist. Three precedence levels:
+    //   1. Explicit `services` from the caller.
+    //   2. Explicit `models` from the caller — resolve each to one service
+    //      via the router's auto-derived route table (subscription preferred).
+    //   3. Wizard-configured `mixtureDefault` from config.yaml.
+    //   4. Fall through to "every available service" (historical default).
+    let whitelist: readonly string[] | null = null;
+    if (servicesAxis.length > 0) {
+      whitelist = servicesAxis;
+    } else if (modelsAxis.length > 0) {
+      const resolved: string[] = [];
+      const unresolved: string[] = [];
+      const isUsable = (name: string): boolean => {
+        const svc = state.config.services[name];
+        if (!svc?.enabled) return false;
+        const disp = state.dispatchers[name];
+        if (!disp?.isAvailable()) return false;
+        const breaker = state.router.getBreaker(name);
+        if (breaker?.isTripped) return false;
+        return true;
+      };
+      for (const model of modelsAxis) {
+        const routes = state.router.servicesForModel(model);
+        // Subscription tier first; falls through to metered to honour the
+        // user's "I want this model, even if it costs me" intent.
+        const ordered = [...routes.subscription, ...routes.metered];
+        const pick = ordered.find(isUsable);
+        if (pick) {
+          if (!resolved.includes(pick)) resolved.push(pick);
+        } else {
+          unresolved.push(model);
+        }
+      }
+      if (resolved.length === 0) {
+        return {
+          results: [],
+          error:
+            `None of the requested models could be resolved to a usable service: ${unresolved.join(", ")}. ` +
+            "Run `dashboard` to see which services are reachable for each model.",
+        };
+      }
+      whitelist = resolved;
+    } else if (state.config.mixtureDefault && state.config.mixtureDefault.length > 0) {
+      whitelist = state.config.mixtureDefault;
+    }
+    // else: whitelist remains null → all-available fallback.
+
+    const requested = whitelist ? new Set(whitelist) : null;
 
     const candidates: string[] = [];
     for (const [name, svc] of Object.entries(state.config.services)) {
       if (!svc.enabled) continue;
       if (!(name in state.dispatchers)) continue;
-      if (requested.size > 0 && !requested.has(name)) continue;
+      if (requested && !requested.has(name)) continue;
       const breaker = state.router.getBreaker(name);
       if (breaker && breaker.isTripped) continue;
       const disp = state.dispatchers[name];
@@ -324,7 +398,7 @@ export async function handleCodeMixture(
         results: [],
         error:
           "No candidate services available for code_mixture. Check breaker " +
-          "state via get_quota_status, or relax the `services` filter.",
+          "state via get_quota_status, or relax the `services`/`models` filter.",
       };
     }
 

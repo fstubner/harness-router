@@ -1,6 +1,6 @@
 {
   "name": "harness-router-mcp",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "MCP server that routes coding tasks model-first across your AI subscriptions and APIs. Use Claude Pro, ChatGPT Plus, Cursor, Copilot CLI, opencode, etc. before falling back to metered API.",
   "keywords": [
     "mcp",

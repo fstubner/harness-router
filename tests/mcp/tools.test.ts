@@ -222,6 +222,137 @@ describe("MCP tools — code_mixture", () => {
     expect(data.results).toEqual([]);
     expect(data.error).toBeDefined();
   });
+
+  it("resolves the `models` axis to one service per model (subscription tier preferred)", async () => {
+    const services = {
+      a_sub: makeService("a_sub", { model: "model-a", tier: "subscription" }),
+      a_metered: makeService("a_metered", { model: "model-a", tier: "metered" }),
+      b_metered: makeService("b_metered", { model: "model-b", tier: "metered" }),
+    };
+    const dispatchers: Record<string, Dispatcher> = {
+      a_sub: new FakeDispatcher("a_sub", { output: "from-sub", service: "a_sub", success: true }),
+      a_metered: new FakeDispatcher("a_metered", {
+        output: "from-metered-a",
+        service: "a_metered",
+        success: true,
+      }),
+      b_metered: new FakeDispatcher("b_metered", {
+        output: "from-metered-b",
+        service: "b_metered",
+        success: true,
+      }),
+    };
+    const holder = buildHolder(services, dispatchers, ["model-a", "model-b"]);
+    const r = await invokeTool(
+      "code_mixture",
+      { prompt: "hi", models: ["model-a", "model-b"] },
+      { holder },
+    );
+    const data = r.data as {
+      results: Array<{ service: string; tier: string; output: string }>;
+    };
+    expect(data.results).toHaveLength(2);
+    const byService = new Map(data.results.map((it) => [it.service, it]));
+    // model-a → subscription route preferred, even when both tiers are usable.
+    expect(byService.get("a_sub")).toBeDefined();
+    expect(byService.get("a_metered")).toBeUndefined();
+    // model-b only has a metered route — falls through to that.
+    expect(byService.get("b_metered")).toBeDefined();
+    expect(byService.get("b_metered")!.tier).toBe("metered");
+  });
+
+  it("falls through models to metered when subscription is unavailable", async () => {
+    const services = {
+      a_sub: makeService("a_sub", { model: "model-a", tier: "subscription" }),
+      a_metered: makeService("a_metered", { model: "model-a", tier: "metered" }),
+    };
+    const dispatchers: Record<string, Dispatcher> = {
+      // subscription dispatcher is unavailable → router should fall through.
+      a_sub: new FakeDispatcher("a_sub", { output: "", service: "a_sub", success: true }, false),
+      a_metered: new FakeDispatcher("a_metered", {
+        output: "from-metered",
+        service: "a_metered",
+        success: true,
+      }),
+    };
+    const holder = buildHolder(services, dispatchers, ["model-a"]);
+    const r = await invokeTool("code_mixture", { prompt: "hi", models: ["model-a"] }, { holder });
+    const data = r.data as { results: Array<{ service: string; tier: string }> };
+    expect(data.results).toHaveLength(1);
+    expect(data.results[0]!.service).toBe("a_metered");
+    expect(data.results[0]!.tier).toBe("metered");
+  });
+
+  it("returns an error when none of the requested models can be resolved", async () => {
+    const services = { a: makeService("a", { model: "model-a" }) };
+    const dispatchers: Record<string, Dispatcher> = { a: new FakeDispatcher("a") };
+    const holder = buildHolder(services, dispatchers, ["model-a"]);
+    const r = await invokeTool("code_mixture", { prompt: "hi", models: ["model-z"] }, { holder });
+    const data = r.data as { results: unknown[]; error?: string };
+    expect(data.results).toEqual([]);
+    expect(data.error).toMatch(/model-z/);
+  });
+
+  it("rejects when both `services` and `models` axes are passed", async () => {
+    const services = { a: makeService("a", { model: "model-a" }) };
+    const dispatchers: Record<string, Dispatcher> = { a: new FakeDispatcher("a") };
+    const holder = buildHolder(services, dispatchers, ["model-a"]);
+    const r = await invokeTool(
+      "code_mixture",
+      { prompt: "hi", services: ["a"], models: ["model-a"] },
+      { holder },
+    );
+    const data = r.data as { results: unknown[]; error?: string };
+    expect(data.results).toEqual([]);
+    expect(data.error).toMatch(/mutually exclusive/i);
+  });
+
+  it("falls back to mixtureDefault when neither axis is passed", async () => {
+    const services = {
+      a: makeService("a", { model: "model-a" }),
+      b: makeService("b", { model: "model-b" }),
+      c: makeService("c", { model: "model-c" }),
+    };
+    const dispatchers: Record<string, Dispatcher> = {
+      a: new FakeDispatcher("a"),
+      b: new FakeDispatcher("b"),
+      c: new FakeDispatcher("c"),
+    };
+    // Build holder, then patch the config to add a mixtureDefault whitelist.
+    const holder = buildHolder(services, dispatchers, ["model-a", "model-b", "model-c"]);
+    const state = holder.state;
+    holder.replace({
+      ...state,
+      config: { ...state.config, mixtureDefault: ["a", "c"] },
+    });
+    const r = await invokeTool("code_mixture", { prompt: "hi" }, { holder });
+    const data = r.data as { results: Array<{ service: string }> };
+    const names = new Set(data.results.map((it) => it.service));
+    expect(names).toEqual(new Set(["a", "c"]));
+  });
+
+  it("explicit services override mixtureDefault", async () => {
+    const services = {
+      a: makeService("a", { model: "model-a" }),
+      b: makeService("b", { model: "model-b" }),
+      c: makeService("c", { model: "model-c" }),
+    };
+    const dispatchers: Record<string, Dispatcher> = {
+      a: new FakeDispatcher("a"),
+      b: new FakeDispatcher("b"),
+      c: new FakeDispatcher("c"),
+    };
+    const holder = buildHolder(services, dispatchers, ["model-a", "model-b", "model-c"]);
+    const state = holder.state;
+    holder.replace({
+      ...state,
+      config: { ...state.config, mixtureDefault: ["a"] },
+    });
+    const r = await invokeTool("code_mixture", { prompt: "hi", services: ["b", "c"] }, { holder });
+    const data = r.data as { results: Array<{ service: string }> };
+    const names = new Set(data.results.map((it) => it.service));
+    expect(names).toEqual(new Set(["b", "c"]));
+  });
 });
 
 describe("MCP tools — introspection", () => {

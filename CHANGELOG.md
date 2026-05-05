@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (empty — track changes for the next release here)
 
+## [0.2.1] — 2026-05-04
+
+Patch release closing two credibility gaps the v0.2.0 docs implied but
+the wizard didn't actually deliver. No breaking changes.
+
+### Added
+
+- **Metered API fallback in the wizard.** When the user has
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY` set, the
+  `onboard` wizard offers to add one `type: openai_compatible` /
+  `tier: metered` service per (provider × matching priority model). The
+  api_key field is written as `${VAR}` — env-interpolation resolves at
+  startup, no secrets in YAML. Closes the gap where v0.2.0's
+  "subscription before metered" pitch had no metered tier by default
+  unless users hand-edited `config.yaml`.
+- **`code_mixture` models axis.** New optional `models: string[]` input
+  on the `code_mixture` tool. The router resolves each canonical model
+  to one service (subscription preferred, metered fallthrough). Lets
+  agents request "compare these specific models" rather than "compare
+  these specific dispatchers." Mutually exclusive with `services`.
+- **`mixture_default` config field.** Optional service whitelist applied
+  when `code_mixture` is called with neither `services` nor `models`.
+  Set during the wizard's mixture-default step. Falls through to "every
+  available service" (the v0.2.0 default) when absent.
+- **`Router.servicesForModel(model)`** public accessor: returns
+  `{subscription: string[], metered: string[]}` route lists for a
+  canonical model. Used internally by the new `models` axis; exposed for
+  callers that want to introspect the auto-derived route table.
+
+### Tests
+
+- 23 new tests across `tests/mcp/tools.test.ts`,
+  `tests/onboarding/wizard.test.ts`, and `tests/config.test.ts`. Total:
+  390 (up from 367).
+
 ## [0.2.0] — 2026-05-03
 
 Major redirect: the router is now **model-first**, not harness-first. The pitch

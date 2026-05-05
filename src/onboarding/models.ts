@@ -232,3 +232,119 @@ export function cliModelFor(harness: string, canonical: string): string | undefi
   const entries = MODEL_CATALOG[harness] ?? [];
   return entries.find((e) => e.canonical === canonical)?.cliModel;
 }
+
+// ---------------------------------------------------------------------------
+// Metered API providers — used by the wizard's metered-fallback step
+// ---------------------------------------------------------------------------
+
+/**
+ * A metered API provider — typically billed per-token. The wizard offers to
+ * add one `type: openai_compatible` service per (provider × matching
+ * priority model) when the user has the corresponding env var set.
+ *
+ * `matchesCanonical` decides which canonical model names this provider can
+ * serve. The match is intentionally generous — Anthropic's API can serve
+ * any "claude-opus-X-Y" or "claude-sonnet-X-Y" name, plus the bare aliases
+ * "opus" / "sonnet" / "haiku" — the API itself rejects unknown specifics.
+ *
+ * `cliModelFor` returns the API-specific name for a canonical. When absent,
+ * we fall back to passing the canonical verbatim — the API will tell the
+ * user if it doesn't recognise it.
+ */
+export interface MeteredProvider {
+  id: string;
+  displayName: string;
+  envVar: string;
+  baseUrl: string;
+  /** Predicate: does this provider serve `canonical` model names? */
+  matchesCanonical: (canonical: string) => boolean;
+  /** Optional override map: canonical → API-specific model id. */
+  cliModelFor: (canonical: string) => string | undefined;
+}
+
+const ANTHROPIC_PROVIDER: MeteredProvider = {
+  id: "anthropic_api",
+  displayName: "Anthropic API (Claude models)",
+  envVar: "ANTHROPIC_API_KEY",
+  baseUrl: "https://api.anthropic.com/v1",
+  matchesCanonical: (c) =>
+    c.toLowerCase().includes("claude") ||
+    c === "opus" ||
+    c === "sonnet" ||
+    c === "haiku" ||
+    c === "opusplan" ||
+    c.startsWith("claude-"),
+  cliModelFor: (c) => {
+    // Anthropic's API expects full versioned IDs. Map known aliases.
+    const map: Record<string, string> = {
+      opus: "claude-opus-4-7",
+      sonnet: "claude-sonnet-4-6",
+      haiku: "claude-haiku-4-5",
+      opusplan: "claude-opus-4-7", // Anthropic API has no "plan" alias; closest is opus
+    };
+    return map[c];
+  },
+};
+
+const OPENAI_PROVIDER: MeteredProvider = {
+  id: "openai_api",
+  displayName: "OpenAI API (GPT models)",
+  envVar: "OPENAI_API_KEY",
+  baseUrl: "https://api.openai.com/v1",
+  matchesCanonical: (c) =>
+    c.toLowerCase().startsWith("gpt-") || c.toLowerCase().startsWith("o1-") || c === "gpt-auto",
+  cliModelFor: (_c) => undefined, // Pass canonical verbatim — OpenAI's API names track the canonical
+};
+
+const GOOGLE_PROVIDER: MeteredProvider = {
+  id: "google_api",
+  displayName: "Google AI API (Gemini models)",
+  envVar: "GEMINI_API_KEY",
+  baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+  matchesCanonical: (c) =>
+    c.toLowerCase().startsWith("gemini") ||
+    c === "pro" ||
+    c === "flash" ||
+    c === "flash-lite" ||
+    c === "auto",
+  cliModelFor: (c) => {
+    const map: Record<string, string> = {
+      pro: "gemini-2.5-pro",
+      flash: "gemini-2.5-flash",
+      "flash-lite": "gemini-2.5-flash-lite",
+      auto: "gemini-2.5-pro",
+    };
+    return map[c];
+  },
+};
+
+export const METERED_PROVIDERS: readonly MeteredProvider[] = [
+  ANTHROPIC_PROVIDER,
+  OPENAI_PROVIDER,
+  GOOGLE_PROVIDER,
+];
+
+/**
+ * For a list of canonical model names, return per-provider matches: which
+ * priority models each detected provider can serve. Empty providers are
+ * dropped; the wizard only prompts about ones with at least one match.
+ */
+export interface ProviderMatches {
+  provider: MeteredProvider;
+  /** Canonical models from priority that this provider can serve. */
+  models: readonly string[];
+}
+
+export function findProviderMatches(
+  modelPriority: readonly string[],
+  envFn: (name: string) => string | undefined = (n) => process.env[n],
+): readonly ProviderMatches[] {
+  const out: ProviderMatches[] = [];
+  for (const provider of METERED_PROVIDERS) {
+    if (!envFn(provider.envVar)) continue;
+    const models = modelPriority.filter((m) => provider.matchesCanonical(m));
+    if (models.length === 0) continue;
+    out.push({ provider, models });
+  }
+  return out;
+}

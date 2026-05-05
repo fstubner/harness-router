@@ -183,6 +183,22 @@ export class Router {
     return this.breakers.get(service);
   }
 
+  /**
+   * Lookup the registered routes for a canonical model. Returns subscription
+   * and metered service lists (declared order). Empty lists for unknown
+   * models. Used by `code_mixture` to resolve the `models` axis to one
+   * service per model — the caller picks the first usable entry (subscription
+   * tier preferred).
+   */
+  servicesForModel(model: string): {
+    subscription: readonly string[];
+    metered: readonly string[];
+  } {
+    const route = this.modelRoutes[model];
+    if (!route) return { subscription: [], metered: [] };
+    return { subscription: route.subscription, metered: route.metered };
+  }
+
   circuitBreakerStatus(): Record<string, ReturnType<CircuitBreaker["status"]>> {
     const out: Record<string, ReturnType<CircuitBreaker["status"]>> = {};
     for (const [name, b] of this.breakers) out[name] = b.status();

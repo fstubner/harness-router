@@ -278,6 +278,13 @@ function modelPriorityFrom(raw: unknown): readonly string[] | undefined {
   return out.length > 0 ? out : undefined;
 }
 
+function mixtureDefaultFrom(raw: unknown): readonly string[] | undefined {
+  // Identical shape parser to modelPriorityFrom — kept separate so future
+  // shape divergence (e.g., {services, models} object form) is a one-place
+  // change.
+  return modelPriorityFrom(raw);
+}
+
 /**
  * Parse a `generic_cli` service's recipe block from raw YAML.
  * Accepts both snake_case and camelCase field names. All fields optional.
@@ -402,6 +409,8 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
     services,
     modelPriority: explicitPriority ?? deriveDefaultModelPriority(services),
   };
+  const mixtureDefault = mixtureDefaultFrom(raw.mixture_default);
+  if (mixtureDefault) cfg.mixtureDefault = mixtureDefault;
   if (Array.isArray(raw.disabled)) cfg.disabled = (raw.disabled as string[]).slice();
   const geminiKey = str(raw.gemini_api_key);
   if (geminiKey) cfg.geminiApiKey = geminiKey;
@@ -615,6 +624,8 @@ export async function loadConfig(
     modelPriority: explicitPriority ?? deriveDefaultModelPriority(services),
     disabled,
   };
+  const mixtureDefault = mixtureDefaultFrom(raw.mixture_default);
+  if (mixtureDefault) cfg.mixtureDefault = mixtureDefault;
   if (apiKeys.gemini_cli) cfg.geminiApiKey = apiKeys.gemini_cli;
   return cfg;
 }

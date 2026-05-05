@@ -122,6 +122,14 @@ export interface RouterConfig {
    * service's `model` is treated as priority-1 in declaration order.
    */
   modelPriority?: readonly string[];
+  /**
+   * Default service whitelist for `code_mixture`. When the agent doesn't
+   * pass `services` or `models` to the tool, the router uses this list to
+   * decide which services to fan out to. Absent (or empty) means "all
+   * available services" (the historical default). Configured via
+   * `harness-router-mcp onboard`'s mixture-default step.
+   */
+  mixtureDefault?: readonly string[];
   geminiApiKey?: string;
   disabled?: readonly string[];
 }
