@@ -1,27 +1,32 @@
 /**
- * Interactive `harness-router-mcp onboard` wizard.
+ * Interactive `harness-router onboard` wizard (v0.3).
+ *
+ * Catalog-free. The wizard is structured around what the user types and
+ * what's installed on their machine — never a hardcoded list of models.
  *
  * Walks the user through:
- *   1. Detecting installed AI CLIs (delegates to `onboard()` with no-verify
- *      for speed — this is a probe, not the full readiness check).
- *   2. Picking the *default model* — what `code` reaches for first.
- *   3. Optional fallback models — the rest of the priority list, in order.
- *   4. Picking which MCP hosts to wire up (Claude Desktop / Code / Cursor / Codex).
- *   5. Writing `~/.harness-router/config.yaml` with the chosen priority +
- *      one service entry per detected harness pointing at the highest-priority
- *      model that harness can serve.
- *   6. Running `install` for the chosen MCP hosts.
+ *   1. Detect installed AI CLIs (probe, no-verify).
+ *   2. Type the model keys they want to route. Optionally pre-loaded with
+ *      OpenRouter's public catalog as a multi-select; falls through to
+ *      free-text on any failure (network, 4xx, malformed).
+ *   3. For each model, pick which detected harness serves it (or none).
+ *   4. For each model, when the matching API-key env var is set
+ *      (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY), offer a
+ *      metered fallback service.
+ *   5. Pick the default `code mode:fanout` set (mixture_default).
+ *   6. Pick which MCP hosts to wire up.
+ *   7. Write `~/.harness-router/config.yaml` in v0.3 shape and run install
+ *      for each chosen host.
  *
- * The wizard is interactive (TTY-only). For non-interactive setups, point
- * `--config` at a hand-written YAML and skip onboarding entirely.
+ * The pure parts (`buildV3WizardConfig` + `renderV3WizardYaml`) are
+ * exported and tested without the inquirer prompt layer.
  */
 
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { checkbox, confirm, select, Separator } from "@inquirer/prompts";
-import yaml from "js-yaml";
+import { checkbox, confirm, input, select, Separator } from "@inquirer/prompts";
 
 import { onboard, type HarnessId, type HarnessReport } from "../onboarding.js";
 import {
@@ -30,177 +35,137 @@ import {
   type InstallTarget,
   type McpServerEntry,
 } from "../install/targets.js";
+import { renderV3Yaml } from "../v3/migrate.js";
 import {
-  aggregateCatalog,
-  cliModelFor,
-  findProviderMatches,
-  MODEL_CATALOG,
-  type ProviderMatches,
-} from "./models.js";
+  fetchOpenRouterCatalogVerbose,
+  type CatalogModel,
+  type CatalogProvider,
+} from "../v3/openrouter.js";
+import type { V3Config, V3MeteredRoute, V3ModelEntry, V3SubscriptionRoute } from "../v3/types.js";
 
 // ---------------------------------------------------------------------------
-// Types
+// Provider env-var policy
 // ---------------------------------------------------------------------------
 
-export interface WizardConfig {
-  /** Canonical model IDs in priority order (head = default). */
-  modelPriority: string[];
-  /** One service per detected harness + per (provider × matching priority model). */
-  services: Record<string, WizardService | WizardMeteredService>;
-  /**
-   * Optional default service whitelist for `code_mixture`. When the agent
-   * doesn't pass `services` or `models` to the tool, the router uses this
-   * list. When absent, mixture defaults to "every available service."
-   */
-  mixtureDefault?: string[];
+interface MeteredProviderInfo {
+  id: CatalogProvider;
+  displayName: string;
+  envVar: string;
+  baseUrl: string;
+  /** Predicate: does this provider serve a given canonical model name? */
+  matchesCanonical: (canonical: string) => boolean;
 }
 
-export interface WizardService {
-  enabled: true;
-  type: "cli";
-  harness: HarnessId;
-  command: string;
-  /** Canonical name (matches modelPriority entry). */
-  model: string;
-  /** What the CLI accepts via `--model`. */
-  cli_model: string;
-  tier: "subscription";
-}
+const METERED_PROVIDERS: readonly MeteredProviderInfo[] = [
+  {
+    id: "anthropic",
+    displayName: "Anthropic API",
+    envVar: "ANTHROPIC_API_KEY",
+    baseUrl: "https://api.anthropic.com/v1",
+    matchesCanonical: (c) => c.toLowerCase().includes("claude"),
+  },
+  {
+    id: "openai",
+    displayName: "OpenAI API",
+    envVar: "OPENAI_API_KEY",
+    baseUrl: "https://api.openai.com/v1",
+    matchesCanonical: (c) => /^(gpt-|o\d|chatgpt-)/i.test(c),
+  },
+  {
+    id: "google",
+    displayName: "Google AI API",
+    envVar: "GEMINI_API_KEY",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+    matchesCanonical: (c) => /^(gemini|imagen|text-bison)/i.test(c),
+  },
+];
 
-export interface WizardMeteredService {
-  enabled: true;
-  type: "openai_compatible";
-  base_url: string;
-  api_key: string;
-  /** Canonical name (matches modelPriority entry). */
-  model: string;
-  /** API-specific model ID. Defaults to canonical when no override is known. */
-  cli_model: string;
-  tier: "metered";
+function findProviderForModel(
+  model: string,
+  envFn: (n: string) => string | undefined,
+): MeteredProviderInfo | undefined {
+  for (const p of METERED_PROVIDERS) {
+    if (!envFn(p.envVar)) continue;
+    if (p.matchesCanonical(model)) return p;
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
-// Pure logic — buildable without I/O so it's testable
+// Pure logic — exported and tested without inquirer
 // ---------------------------------------------------------------------------
+
+export interface ModelChoice {
+  /** Canonical model key (becomes `models.<key>` in YAML). */
+  key: string;
+  /** Detected harness id that should serve this model on subscription tier. */
+  subscriptionHarness?: HarnessId;
+  /** When true, also generate an openai_compatible metered route. */
+  addMetered?: boolean;
+}
+
+export interface BuildOpts {
+  /** Final priority order. Each entry matches a `ModelChoice.key`. */
+  priority: readonly string[];
+  choices: readonly ModelChoice[];
+  /** Models that `code mode:fanout` should fan out to by default. */
+  mixtureDefault?: readonly string[];
+  /** Maps a HarnessId to the resolved CLI command (for the route's `command`). */
+  harnessCommand: (id: HarnessId) => string;
+  /** Env-var resolver. Defaults to `process.env`. */
+  envFn?: (n: string) => string | undefined;
+}
 
 /**
- * Build a WizardConfig from the wizard's collected state.
+ * Build a {@link V3Config} from the wizard's collected state.
  *
- * Subscription services: for each detected harness, generate one service
- * whose `model` is the highest-priority canonical the harness can serve.
- * Harnesses that can't serve any of the user's chosen priorities are
- * dropped — including them with a non-matching model would never route.
- *
- * Metered services: for each (provider × matching priority model) the
- * user opted into, generate one `type: openai_compatible` service with
- * `tier: metered`. The api_key is written as `${ENV_VAR}` so the loader's
- * env-interpolation step resolves it at startup (no secrets in the YAML).
- *
- * Mixture default: optional list of service names that `code_mixture`
- * fans out to by default. When omitted, mixture defaults to "every
- * available service" (the historical behaviour).
+ * Skips choices that have no subscription harness AND no metered fallback —
+ * an entry with neither route is invalid V3 and the loader would reject it.
  */
-export function buildWizardConfig(input: {
-  modelPriority: readonly string[];
-  detectedHarnesses: readonly { id: HarnessId; command: string }[];
-  /** Providers the user opted in for metered fallback. */
-  meteredProviders?: readonly ProviderMatches[];
-  /** Service names code_mixture fans out to by default. */
-  mixtureDefault?: readonly string[];
-}): WizardConfig {
-  const services: Record<string, WizardService | WizardMeteredService> = {};
+export function buildV3WizardConfig(opts: BuildOpts): V3Config {
+  const envFn = opts.envFn ?? ((n) => process.env[n]);
+  const models: Record<string, V3ModelEntry> = {};
+  const priority: string[] = [];
 
-  // 1. Subscription services from detected harnesses
-  for (const h of input.detectedHarnesses) {
-    const catalog = MODEL_CATALOG[h.id] ?? [];
-    if (catalog.length === 0) continue;
-    const match = input.modelPriority.find(
-      (canonical) => cliModelFor(h.id, canonical) !== undefined,
-    );
-    if (!match) continue;
-    services[h.id] = {
-      enabled: true,
-      type: "cli",
-      harness: h.id,
-      command: h.command,
-      model: match,
-      cli_model: cliModelFor(h.id, match) ?? match,
-      tier: "subscription",
-    };
-  }
-
-  // 2. Metered services per (provider × matching priority model)
-  for (const m of input.meteredProviders ?? []) {
-    for (const canonical of m.models) {
-      // service name pattern: anthropic_api_opus, openai_api_gpt-5_4, …
-      // strip dots from canonical for the YAML key — keeps it valid.
-      const safeKey = canonical.replace(/\./g, "_");
-      const name = `${m.provider.id}_${safeKey}`;
-      services[name] = {
-        enabled: true,
-        type: "openai_compatible",
-        base_url: m.provider.baseUrl,
-        api_key: `\${${m.provider.envVar}}`,
-        model: canonical,
-        cli_model: m.provider.cliModelFor(canonical) ?? canonical,
-        tier: "metered",
+  for (const choice of opts.choices) {
+    const entry: V3ModelEntry = {};
+    if (choice.subscriptionHarness) {
+      const sub: V3SubscriptionRoute = {
+        harness: choice.subscriptionHarness,
+        command: opts.harnessCommand(choice.subscriptionHarness),
       };
+      entry.subscription = sub;
     }
+    if (choice.addMetered) {
+      const provider = findProviderForModel(choice.key, envFn);
+      if (provider) {
+        const metered: V3MeteredRoute = {
+          base_url: provider.baseUrl,
+          api_key: `\${${provider.envVar}}`,
+        };
+        entry.metered = metered;
+      }
+    }
+    if (!entry.subscription && !entry.metered) continue; // skip invalid
+    models[choice.key] = entry;
   }
 
-  const cfg: WizardConfig = {
-    modelPriority: input.modelPriority.slice(),
-    services,
-  };
-  if (input.mixtureDefault && input.mixtureDefault.length > 0) {
-    cfg.mixtureDefault = input.mixtureDefault.slice();
+  // Filter priority to keys that survived (no orphan references).
+  for (const key of opts.priority) {
+    if (models[key]) priority.push(key);
+  }
+
+  const cfg: V3Config = { priority, models };
+  if (opts.mixtureDefault && opts.mixtureDefault.length > 0) {
+    const mix: string[] = [];
+    for (const k of opts.mixtureDefault) if (models[k] && !mix.includes(k)) mix.push(k);
+    if (mix.length > 0) (cfg as { mixture_default?: readonly string[] }).mixture_default = mix;
   }
   return cfg;
 }
 
-/** Render a WizardConfig as a YAML string. */
-export function renderWizardYaml(config: WizardConfig): string {
-  const root: Record<string, unknown> = {
-    model_priority: config.modelPriority,
-    services: Object.fromEntries(
-      Object.entries(config.services).map(([name, svc]) => {
-        // Two distinct shapes — CLI vs openai_compatible. js-yaml serialises
-        // each by passing through the object, so build per-shape rather than
-        // generically to keep the YAML clean.
-        if (svc.type === "cli") {
-          return [
-            name,
-            {
-              enabled: svc.enabled,
-              type: svc.type,
-              harness: svc.harness,
-              command: svc.command,
-              model: svc.model,
-              cli_model: svc.cli_model,
-              tier: svc.tier,
-            },
-          ];
-        }
-        return [
-          name,
-          {
-            enabled: svc.enabled,
-            type: svc.type,
-            base_url: svc.base_url,
-            api_key: svc.api_key,
-            model: svc.model,
-            cli_model: svc.cli_model,
-            tier: svc.tier,
-          },
-        ];
-      }),
-    ),
-  };
-  if (config.mixtureDefault && config.mixtureDefault.length > 0) {
-    root.mixture_default = config.mixtureDefault;
-  }
-  return yaml.dump(root, { lineWidth: 100, noRefs: true });
-}
+/** Convenience re-export so callers don't need to import from v3/. */
+export const renderV3WizardYaml = renderV3Yaml;
 
 /** Default location for the wizard's output. */
 export function defaultConfigPath(): string {
@@ -220,9 +185,7 @@ export interface RunWizardOpts {
 
 export async function runWizard(opts: RunWizardOpts = {}): Promise<number> {
   const out = process.stdout;
-
-  // ---- 1. Detect installed harnesses (no-verify for speed) -----------------
-  out.write("\n▌ harness-router-mcp onboard\n\n");
+  out.write("\n▌ harness-router onboard\n\n");
   out.write("  Detecting installed AI CLIs…\n\n");
 
   const reports = await onboard({ noVerify: true });
@@ -231,8 +194,7 @@ export async function runWizard(opts: RunWizardOpts = {}): Promise<number> {
     out.write(
       "  No supported CLIs found on PATH. Install at least one of:\n" +
         "    claude, codex, cursor's `agent`, gemini, opencode, copilot\n" +
-        "  Then re-run `harness-router-mcp onboard`. (Or run `harness-router-mcp doctor`\n" +
-        "  for a per-CLI install/upgrade checklist.)\n",
+        "  Then re-run `harness-router onboard`.\n",
     );
     return 1;
   }
@@ -242,130 +204,84 @@ export async function runWizard(opts: RunWizardOpts = {}): Promise<number> {
   }
   out.write(`\n  Detected ${detected.length} of ${reports.length} CLIs.\n\n`);
 
-  // ---- 2. Pick the default model ------------------------------------------
-  const detectedIds = detected.map((r) => r.harness);
-  const aggregated = aggregateCatalog(detectedIds);
-  if (aggregated.length === 0) {
-    out.write(
-      "  No catalogued models for any detected CLI. (Catalog is built from\n" +
-        "  each provider's docs — if your CLI is newer than ours, the wizard\n" +
-        "  can't help here. Fall back to writing config.yaml by hand.)\n",
-    );
+  // ---- Step 2: pick model keys to route -----------------------------------
+  out.write("  Fetching OpenRouter catalog (used for the picker; free-text fallback always works)…\n");
+  const catalog = await fetchOpenRouterCatalogVerbose({ timeoutMs: 5000 });
+
+  let typedKeys: string[] = [];
+  if (catalog.models.length > 0) {
+    typedKeys = await pickFromCatalog(catalog.models);
+  }
+  // Always offer free-text input — for local models, niche providers, or
+  // anything OpenRouter missed.
+  const extra = await input({
+    message:
+      "Additional model keys (comma-separated, optional). " +
+      "Use whatever your CLI accepts via --model. Leave empty to skip.",
+    default: "",
+  });
+  for (const raw of extra.split(",")) {
+    const k = raw.trim();
+    if (k && !typedKeys.includes(k)) typedKeys.push(k);
+  }
+
+  if (typedKeys.length === 0) {
+    out.write("\n  No models selected. Run `harness-router onboard` again to retry.\n");
     return 1;
   }
 
-  const defaultChoice = await select<string>({
-    message: "Default model — what `code` reaches for first when no override is passed",
-    choices: aggregated
-      .sort((a, b) => Number(b.alias) - Number(a.alias)) // aliases first
-      .map((m) => ({
-        name: `${m.canonical}  (${m.servedBy.join(", ")})`,
-        value: m.canonical,
-        description: m.description,
-      })),
-  });
+  // ---- Step 3: priority order ---------------------------------------------
+  // checkbox-with-order isn't a stock inquirer feature; use a dedicated
+  // ordered re-pick via the rendered list.
+  const priority = await orderModels(typedKeys);
 
-  // ---- 3. Optional fallback models (in priority order) --------------------
-  const remaining = aggregated.filter((m) => m.canonical !== defaultChoice);
-  let fallbacks: string[] = [];
-  if (remaining.length > 0) {
-    fallbacks = await checkbox<string>({
-      message: "Fallback models — used when the default's routes are exhausted (in shown order)",
+  // ---- Step 4: subscription harness per model -----------------------------
+  const detectedIds = detected.map((r) => r.harness);
+  const choices: ModelChoice[] = [];
+  for (const key of priority) {
+    const harness = await select<HarnessId | "__none__">({
+      message: `Which harness serves "${key}" on subscription tier? (choose "none" to skip)`,
       choices: [
-        new Separator("— Aliases (auto-roll forward) —"),
-        ...remaining
-          .filter((m) => m.alias)
-          .map((m) => ({
-            name: `${m.canonical}  (${m.servedBy.join(", ")})`,
-            value: m.canonical,
-            description: m.description,
-            checked: false,
-          })),
-        new Separator("— Pinned versions —"),
-        ...remaining
-          .filter((m) => !m.alias)
-          .map((m) => ({
-            name: `${m.canonical}  (${m.servedBy.join(", ")})`,
-            value: m.canonical,
-            description: m.description,
-            checked: false,
-          })),
+        ...detectedIds.map((id) => ({ name: id, value: id as HarnessId })),
+        new Separator("—"),
+        { name: "(none — metered only or skip)", value: "__none__" as const },
       ],
+      default: detectedIds[0] ?? "__none__",
     });
+    const choice: ModelChoice = { key };
+    if (harness !== "__none__") choice.subscriptionHarness = harness;
+    choices.push(choice);
   }
 
-  const modelPriority = [defaultChoice, ...fallbacks];
-
-  // ---- 4. Metered fallback (offer per detected API key) ------------------
-  // Closes the credibility gap: the README pitches "subscriptions before
-  // metered API" but without this step the wizard never produces a metered
-  // service, so the metered tier in the router is dead code by default.
-  const matches = findProviderMatches(modelPriority);
-  let chosenProviders: ProviderMatches[] = [];
-  if (matches.length > 0) {
-    out.write("\n  Detected API keys for fallback providers:\n");
-    for (const m of matches) {
-      out.write(
-        `    • ${m.provider.displayName} (${m.provider.envVar}) → can serve: ${m.models.join(", ")}\n`,
-      );
-    }
-    const chosen = await checkbox<string>({
-      message: "Add metered fallback services? (used only when subscription routes are exhausted)",
-      choices: matches.map((m) => ({
-        name: `${m.provider.displayName} for [${m.models.join(", ")}]`,
-        value: m.provider.id,
-        checked: true,
-      })),
+  // ---- Step 5: metered fallback per matching env var ----------------------
+  for (const choice of choices) {
+    const provider = findProviderForModel(choice.key, (n) => process.env[n]);
+    if (!provider) continue;
+    const add = await confirm({
+      message: `Add ${provider.displayName} metered fallback for "${choice.key}"? (uses ${provider.envVar})`,
+      default: true,
     });
-    chosenProviders = matches.filter((m) => chosen.includes(m.provider.id));
-  } else {
-    out.write(
-      "\n  No metered-API env vars detected (looked for ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY).\n" +
-        "  Skipping metered fallback — set one and re-run if you want pay-per-token fallback.\n",
-    );
+    if (add) choice.addMetered = true;
   }
 
-  // ---- 5. Mixture default (which services for code_mixture by default) ----
-  // Service names we're about to write. Compute now so the picker shows
-  // them in their final form.
-  const allServiceNames: string[] = [];
-  for (const id of detectedIds) {
-    if (MODEL_CATALOG[id] && cliModelFor(id, defaultChoice) !== undefined) allServiceNames.push(id);
-    else if (MODEL_CATALOG[id] && fallbacks.some((f) => cliModelFor(id, f) !== undefined)) {
-      allServiceNames.push(id);
-    }
-  }
-  for (const m of chosenProviders) {
-    for (const canonical of m.models) {
-      allServiceNames.push(`${m.provider.id}_${canonical.replace(/\./g, "_")}`);
-    }
-  }
-
+  // ---- Step 6: mixture default --------------------------------------------
+  const validForMixture = choices
+    .filter((c) => c.subscriptionHarness || c.addMetered)
+    .map((c) => c.key);
   let mixtureDefault: string[] = [];
-  if (allServiceNames.length > 1) {
+  if (validForMixture.length > 1) {
     mixtureDefault = await checkbox<string>({
       message:
-        "For `code_mixture` (fan-out parallel comparison), which services by default? (skip = all available)",
-      choices: allServiceNames.map((name) => ({
-        name,
-        value: name,
-        checked: true,
-      })),
+        "For `code mode:fanout` (parallel comparison), which models by default? (skip = all available)",
+      choices: validForMixture.map((k) => ({ name: k, value: k, checked: false })),
     });
-    // Empty = "all available" (router default), so don't bother writing.
-    if (mixtureDefault.length === allServiceNames.length) mixtureDefault = [];
   }
 
-  // ---- 6. Pick which MCP hosts to wire up ---------------------------------
+  // ---- Step 7: MCP host install ------------------------------------------
   let chosenTargets: InstallTarget[] = [];
   if (!opts.skipInstall) {
     const presentTargets = INSTALL_TARGETS.filter((t) => t.configPath() !== null);
-    if (presentTargets.length === 0) {
-      out.write(
-        "\n  No MCP hosts detected for auto-install. You can still run the\n" +
-          "  router via `harness-router-mcp mcp` directly. Skipping install step.\n",
-      );
-    } else {
+    if (presentTargets.length > 0) {
       const chosenIds = await checkbox<string>({
         message: "Wire harness-router into which MCP hosts?",
         choices: presentTargets.map((t) => ({
@@ -378,23 +294,16 @@ export async function runWizard(opts: RunWizardOpts = {}): Promise<number> {
     }
   }
 
-  // ---- 5. Confirm + write config ------------------------------------------
-  const detectedForConfig = detected.map((r) => {
-    const spec = reports.find((x) => x.harness === r.harness);
-    return { id: r.harness, command: spec?.installCommand?.split(" ")[0] ?? r.harness };
-  });
-  const buildOpts: Parameters<typeof buildWizardConfig>[0] = {
-    modelPriority,
-    detectedHarnesses: detectedForConfig.map((d) => ({
-      id: d.id,
-      command: harnessCommand(d.id),
-    })),
+  // ---- Build, preview, confirm, write -------------------------------------
+  const buildOpts: BuildOpts = {
+    priority,
+    choices,
+    harnessCommand,
   };
-  if (chosenProviders.length > 0) buildOpts.meteredProviders = chosenProviders;
   if (mixtureDefault.length > 0) buildOpts.mixtureDefault = mixtureDefault;
-  const config = buildWizardConfig(buildOpts);
+  const config = buildV3WizardConfig(buildOpts);
   const cfgPath = opts.configPath ?? defaultConfigPath();
-  const yamlText = renderWizardYaml(config);
+  const yamlText = renderV3Yaml(config);
 
   out.write("\n  Config preview:\n");
   out.write(yamlText.replace(/^/gm, "    "));
@@ -413,7 +322,6 @@ export async function runWizard(opts: RunWizardOpts = {}): Promise<number> {
   await fs.writeFile(cfgPath, yamlText, "utf-8");
   out.write(`  ✓ wrote ${cfgPath}\n`);
 
-  // ---- 6. Install into chosen hosts ---------------------------------------
   const entry: McpServerEntry = defaultEntry();
   if (chosenTargets.length > 0) {
     out.write(`\n  Installing harness-router into ${chosenTargets.length} host(s)…\n`);
@@ -430,11 +338,61 @@ export async function runWizard(opts: RunWizardOpts = {}): Promise<number> {
     }
     out.write(
       "\n  Restart any host you just wired so it picks up harness-router.\n" +
-        "  Run `harness-router-mcp doctor` to verify the underlying CLIs are authed and dispatching.\n",
+        "  Run `harness-router doctor` to verify the underlying CLIs are authed and dispatching.\n",
     );
   }
 
   return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Inquirer helpers — kept thin so they're easy to retest by stubbing inquirer
+// ---------------------------------------------------------------------------
+
+async function pickFromCatalog(models: readonly CatalogModel[]): Promise<string[]> {
+  // Group by provider for a cleaner picker.
+  const byProvider = new Map<CatalogProvider, CatalogModel[]>();
+  for (const m of models) {
+    const arr = byProvider.get(m.provider) ?? [];
+    arr.push(m);
+    byProvider.set(m.provider, arr);
+  }
+  const choices: Array<{ name: string; value: string; checked: false } | Separator> = [];
+  for (const [provider, list] of byProvider) {
+    choices.push(new Separator(`— ${provider} —`));
+    for (const m of list) {
+      choices.push({
+        name: m.context_window
+          ? `${m.canonical}  (${(m.context_window / 1000).toFixed(0)}k ctx)`
+          : m.canonical,
+        value: m.canonical,
+        checked: false,
+      });
+    }
+  }
+  return checkbox<string>({
+    message: "Pick models to route (use space to select, enter to confirm; skip with no selections):",
+    choices,
+  });
+}
+
+async function orderModels(unordered: readonly string[]): Promise<string[]> {
+  if (unordered.length <= 1) return [...unordered];
+  // Inquirer doesn't have a native reorder prompt — use a sequence of
+  // selects, removing each pick from the remaining list. Keeps the wizard
+  // dependency-free and works in any TTY.
+  const remaining: string[] = [...unordered];
+  const order: string[] = [];
+  while (remaining.length > 1) {
+    const next = await select<string>({
+      message: `Pick the next-priority model (${order.length + 1}/${unordered.length}):`,
+      choices: remaining.map((k) => ({ name: k, value: k })),
+    });
+    order.push(next);
+    remaining.splice(remaining.indexOf(next), 1);
+  }
+  if (remaining.length === 1) order.push(remaining[0]!);
+  return order;
 }
 
 // ---------------------------------------------------------------------------

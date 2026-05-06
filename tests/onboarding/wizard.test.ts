@@ -1,278 +1,195 @@
 /**
- * Unit tests for the pure parts of the onboard wizard. The interactive
- * prompts can't be unit-tested without a TTY, but `buildWizardConfig`
- * (the model-priority + service generator) is a pure function.
+ * Tests for the v0.3 wizard's pure parts.
+ *
+ * The interactive prompts can't be unit-tested without a TTY, but
+ * `buildV3WizardConfig` (the model-keyed config builder) is a pure
+ * function — same testability story as v0.2's buildWizardConfig.
  */
 
 import { describe, expect, it } from "vitest";
 
-import { buildWizardConfig, renderWizardYaml } from "../../src/onboarding/wizard.js";
 import {
-  aggregateCatalog,
-  cliModelFor,
-  findProviderMatches,
-  METERED_PROVIDERS,
-} from "../../src/onboarding/models.js";
+  buildV3WizardConfig,
+  renderV3WizardYaml,
+  type ModelChoice,
+} from "../../src/onboarding/wizard.js";
+import type { HarnessId } from "../../src/onboarding.js";
 
-describe("aggregateCatalog", () => {
-  it("merges models served by multiple harnesses", () => {
-    const out = aggregateCatalog(["claude_code", "cursor"]);
-    // Both harnesses share no canonical name in our catalog (claude_code uses
-    // 'opus', 'sonnet'; cursor uses 'Auto', 'Opus 4.6', etc.), so each
-    // canonical should be served by exactly one harness.
-    for (const row of out) {
-      expect(row.servedBy).toHaveLength(1);
-    }
-    // The aggregated list contains entries from both harnesses.
-    const fromClaude = out.filter((r) => r.servedBy.includes("claude_code"));
-    const fromCursor = out.filter((r) => r.servedBy.includes("cursor"));
-    expect(fromClaude.length).toBeGreaterThan(0);
-    expect(fromCursor.length).toBeGreaterThan(0);
+const harnessCommand = (id: HarnessId): string =>
+  ({
+    claude_code: "claude",
+    codex: "codex",
+    cursor: "agent",
+    gemini_cli: "gemini",
+    opencode: "opencode",
+    copilot: "copilot",
+  })[id] ?? id;
+
+describe("buildV3WizardConfig", () => {
+  it("builds a model-keyed entry with subscription route only", () => {
+    const cfg = buildV3WizardConfig({
+      priority: ["opus"],
+      choices: [{ key: "opus", subscriptionHarness: "claude_code" }],
+      harnessCommand,
+      envFn: () => undefined,
+    });
+    expect(cfg.priority).toEqual(["opus"]);
+    expect(cfg.models.opus?.subscription?.harness).toBe("claude_code");
+    expect(cfg.models.opus?.subscription?.command).toBe("claude");
+    expect(cfg.models.opus?.metered).toBeUndefined();
   });
 
-  it("returns empty for unknown harnesses", () => {
-    expect(aggregateCatalog(["fictional_harness"])).toEqual([]);
+  it("adds a metered route when addMetered is true and the env var is set", () => {
+    const cfg = buildV3WizardConfig({
+      priority: ["claude-opus-4-7"],
+      choices: [
+        { key: "claude-opus-4-7", subscriptionHarness: "claude_code", addMetered: true },
+      ],
+      harnessCommand,
+      envFn: (n) => (n === "ANTHROPIC_API_KEY" ? "sk-test" : undefined),
+    });
+    expect(cfg.models["claude-opus-4-7"]?.metered).toBeDefined();
+    expect(cfg.models["claude-opus-4-7"]?.metered?.base_url).toBe(
+      "https://api.anthropic.com/v1",
+    );
+    // Never embeds the actual key value — uses the ${VAR} placeholder.
+    expect(cfg.models["claude-opus-4-7"]?.metered?.api_key).toBe("${ANTHROPIC_API_KEY}");
+  });
+
+  it("does not add metered when addMetered is true but no env var is set", () => {
+    const cfg = buildV3WizardConfig({
+      priority: ["claude-opus-4-7"],
+      choices: [{ key: "claude-opus-4-7", addMetered: true }], // no subscription either
+      harnessCommand,
+      envFn: () => undefined,
+    });
+    // Entry with neither route should be skipped entirely — no orphan model
+    // entry appears in the output.
+    expect(cfg.models["claude-opus-4-7"]).toBeUndefined();
+    expect(cfg.priority).toEqual([]);
+  });
+
+  it("routes the right provider per model key based on heuristic match", () => {
+    const cfg = buildV3WizardConfig({
+      priority: ["claude-opus-4-7", "gpt-5.4", "gemini-2.5-pro"],
+      choices: [
+        { key: "claude-opus-4-7", addMetered: true },
+        { key: "gpt-5.4", addMetered: true },
+        { key: "gemini-2.5-pro", addMetered: true },
+      ],
+      harnessCommand,
+      envFn: (n) =>
+        n === "ANTHROPIC_API_KEY" || n === "OPENAI_API_KEY" || n === "GEMINI_API_KEY"
+          ? "sk-test"
+          : undefined,
+    });
+    expect(cfg.models["claude-opus-4-7"]?.metered?.base_url).toMatch(/anthropic/);
+    expect(cfg.models["gpt-5.4"]?.metered?.base_url).toMatch(/openai/);
+    expect(cfg.models["gemini-2.5-pro"]?.metered?.base_url).toMatch(/googleapis/);
+  });
+
+  it("filters priority to entries that survived (no orphan keys)", () => {
+    const cfg = buildV3WizardConfig({
+      priority: ["alive", "dead"],
+      choices: [
+        { key: "alive", subscriptionHarness: "claude_code" },
+        { key: "dead" }, // no harness, no metered → dropped
+      ],
+      harnessCommand,
+      envFn: () => undefined,
+    });
+    expect(cfg.priority).toEqual(["alive"]);
+    expect(cfg.models.alive).toBeDefined();
+    expect(cfg.models.dead).toBeUndefined();
+  });
+
+  it("preserves mixture_default and dedupes", () => {
+    const cfg = buildV3WizardConfig({
+      priority: ["a", "b"],
+      choices: [
+        { key: "a", subscriptionHarness: "claude_code" },
+        { key: "b", subscriptionHarness: "codex" },
+      ],
+      mixtureDefault: ["a", "b", "a"], // dupe
+      harnessCommand,
+      envFn: () => undefined,
+    });
+    expect(cfg.mixture_default).toEqual(["a", "b"]);
+  });
+
+  it("filters mixture_default to keys that exist in models", () => {
+    const cfg = buildV3WizardConfig({
+      priority: ["a"],
+      choices: [{ key: "a", subscriptionHarness: "claude_code" }],
+      mixtureDefault: ["a", "ghost"],
+      harnessCommand,
+      envFn: () => undefined,
+    });
+    expect(cfg.mixture_default).toEqual(["a"]);
+  });
+
+  it("omits mixture_default when no surviving entries", () => {
+    const cfg = buildV3WizardConfig({
+      priority: ["a"],
+      choices: [{ key: "a", subscriptionHarness: "claude_code" }],
+      mixtureDefault: ["ghost"],
+      harnessCommand,
+      envFn: () => undefined,
+    });
+    expect(cfg.mixture_default).toBeUndefined();
+  });
+
+  it("handles a model with both subscription harness and metered fallback", () => {
+    const choices: ModelChoice[] = [
+      {
+        key: "claude-opus-4-7",
+        subscriptionHarness: "claude_code",
+        addMetered: true,
+      },
+    ];
+    const cfg = buildV3WizardConfig({
+      priority: ["claude-opus-4-7"],
+      choices,
+      harnessCommand,
+      envFn: (n) => (n === "ANTHROPIC_API_KEY" ? "sk-test" : undefined),
+    });
+    expect(cfg.models["claude-opus-4-7"]?.subscription).toBeDefined();
+    expect(cfg.models["claude-opus-4-7"]?.metered).toBeDefined();
   });
 });
 
-describe("cliModelFor", () => {
-  it("returns the cli-specific name for a known canonical", () => {
-    expect(cliModelFor("claude_code", "opus")).toBe("opus");
-    expect(cliModelFor("gemini_cli", "pro")).toBe("pro");
-    expect(cliModelFor("codex", "gpt-5.4")).toBe("gpt-5.4");
-  });
-
-  it("returns undefined when the harness can't serve that canonical", () => {
-    expect(cliModelFor("claude_code", "gpt-5.4")).toBeUndefined();
-    expect(cliModelFor("codex", "opus")).toBeUndefined();
-  });
-});
-
-describe("buildWizardConfig", () => {
-  it("creates one service per detected harness, pinning each to the highest-priority model it can serve", () => {
-    const cfg = buildWizardConfig({
-      modelPriority: ["opus", "gpt-5.4", "sonnet"],
-      detectedHarnesses: [
-        { id: "claude_code", command: "claude" },
-        { id: "codex", command: "codex" },
+describe("renderV3WizardYaml", () => {
+  it("emits valid YAML with priority + models + mixture_default", () => {
+    const cfg = buildV3WizardConfig({
+      priority: ["opus", "gpt-5.4"],
+      choices: [
+        { key: "opus", subscriptionHarness: "claude_code" },
+        { key: "gpt-5.4", subscriptionHarness: "cursor" },
       ],
+      mixtureDefault: ["opus", "gpt-5.4"],
+      harnessCommand,
+      envFn: () => undefined,
     });
-    // claude_code can serve opus (1st in priority) and sonnet → picks opus
-    expect(cfg.services.claude_code).toMatchObject({
-      harness: "claude_code",
-      command: "claude",
-      model: "opus",
-      cli_model: "opus",
-      tier: "subscription",
-    });
-    // codex can serve gpt-5.4 (2nd in priority) → picks gpt-5.4
-    expect(cfg.services.codex).toMatchObject({
-      harness: "codex",
-      command: "codex",
-      model: "gpt-5.4",
-      cli_model: "gpt-5.4",
-    });
-  });
-
-  it("drops harnesses that can't serve any priority entry", () => {
-    const cfg = buildWizardConfig({
-      modelPriority: ["opus"], // only opus → codex can't serve, claude_code can
-      detectedHarnesses: [
-        { id: "claude_code", command: "claude" },
-        { id: "codex", command: "codex" },
-      ],
-    });
-    expect(cfg.services.claude_code).toBeDefined();
-    expect(cfg.services.codex).toBeUndefined();
-  });
-
-  it("preserves modelPriority order verbatim", () => {
-    const cfg = buildWizardConfig({
-      modelPriority: ["gpt-5.4", "sonnet", "pro"],
-      detectedHarnesses: [],
-    });
-    expect(cfg.modelPriority).toEqual(["gpt-5.4", "sonnet", "pro"]);
-  });
-});
-
-describe("renderWizardYaml", () => {
-  it("emits a valid YAML structure with model_priority + services", () => {
-    const cfg = buildWizardConfig({
-      modelPriority: ["opus", "gpt-5.4"],
-      detectedHarnesses: [
-        { id: "claude_code", command: "claude" },
-        { id: "codex", command: "codex" },
-      ],
-    });
-    const out = renderWizardYaml(cfg);
-    expect(out).toContain("model_priority:");
+    const out = renderV3WizardYaml(cfg);
+    expect(out).toContain("priority:");
     expect(out).toContain("- opus");
     expect(out).toContain("- gpt-5.4");
-    expect(out).toContain("services:");
-    expect(out).toContain("claude_code:");
-    expect(out).toContain("codex:");
-    expect(out).toContain("model: opus");
-    expect(out).toContain("cli_model: opus");
-    expect(out).toContain("tier: subscription");
-  });
-
-  it("emits mixture_default when set", () => {
-    const cfg = buildWizardConfig({
-      modelPriority: ["opus"],
-      detectedHarnesses: [{ id: "claude_code", command: "claude" }],
-      mixtureDefault: ["claude_code"],
-    });
-    const out = renderWizardYaml(cfg);
+    expect(out).toContain("models:");
+    expect(out).toContain("opus:");
+    expect(out).toContain("subscription:");
+    expect(out).toContain("harness: claude_code");
     expect(out).toContain("mixture_default:");
-    expect(out).toMatch(/mixture_default:\s*\n\s+- claude_code/);
   });
 
-  it("omits mixture_default when not set", () => {
-    const cfg = buildWizardConfig({
-      modelPriority: ["opus"],
-      detectedHarnesses: [{ id: "claude_code", command: "claude" }],
+  it("never embeds the raw env var value — only the ${VAR} placeholder", () => {
+    const cfg = buildV3WizardConfig({
+      priority: ["claude-opus-4-7"],
+      choices: [{ key: "claude-opus-4-7", addMetered: true }],
+      harnessCommand,
+      envFn: (n) => (n === "ANTHROPIC_API_KEY" ? "sk-secret-DO-NOT-LEAK" : undefined),
     });
-    expect(renderWizardYaml(cfg)).not.toContain("mixture_default");
-  });
-});
-
-describe("METERED_PROVIDERS catalog", () => {
-  it("ships the 3 providers we expect — Anthropic, OpenAI, Google", () => {
-    const ids = METERED_PROVIDERS.map((p) => p.id).sort();
-    expect(ids).toEqual(["anthropic_api", "google_api", "openai_api"]);
-  });
-
-  it("Anthropic recognises bare aliases and maps them to pinned API IDs", () => {
-    const a = METERED_PROVIDERS.find((p) => p.id === "anthropic_api")!;
-    expect(a.matchesCanonical("opus")).toBe(true);
-    expect(a.matchesCanonical("sonnet")).toBe(true);
-    expect(a.matchesCanonical("haiku")).toBe(true);
-    expect(a.matchesCanonical("claude-opus-4-7")).toBe(true);
-    expect(a.matchesCanonical("gpt-5.4")).toBe(false);
-    // Aliases get mapped to API-pinned IDs.
-    expect(a.cliModelFor("opus")).toMatch(/^claude-opus/);
-    expect(a.cliModelFor("sonnet")).toMatch(/^claude-sonnet/);
-  });
-
-  it("OpenAI passes canonical verbatim (no override)", () => {
-    const o = METERED_PROVIDERS.find((p) => p.id === "openai_api")!;
-    expect(o.matchesCanonical("gpt-5.4")).toBe(true);
-    expect(o.matchesCanonical("gpt-5.4-mini")).toBe(true);
-    expect(o.matchesCanonical("o1-pro")).toBe(true);
-    expect(o.matchesCanonical("opus")).toBe(false);
-    expect(o.cliModelFor("gpt-5.4")).toBeUndefined();
-  });
-
-  it("Google maps Gemini aliases to pinned IDs", () => {
-    const g = METERED_PROVIDERS.find((p) => p.id === "google_api")!;
-    expect(g.matchesCanonical("pro")).toBe(true);
-    expect(g.matchesCanonical("flash")).toBe(true);
-    expect(g.matchesCanonical("gemini-2.5-pro")).toBe(true);
-    expect(g.matchesCanonical("gpt-5.4")).toBe(false);
-    expect(g.cliModelFor("pro")).toBe("gemini-2.5-pro");
-    expect(g.cliModelFor("flash")).toBe("gemini-2.5-flash");
-  });
-});
-
-describe("findProviderMatches", () => {
-  it("only returns providers whose env var is set", () => {
-    const env = (n: string) => (n === "ANTHROPIC_API_KEY" ? "sk-…" : undefined);
-    const matches = findProviderMatches(["opus", "gpt-5.4"], env);
-    expect(matches).toHaveLength(1);
-    expect(matches[0]!.provider.id).toBe("anthropic_api");
-    expect(matches[0]!.models).toEqual(["opus"]);
-  });
-
-  it("filters models to ones each provider can serve", () => {
-    const env = () => "sk-…"; // all keys present
-    const matches = findProviderMatches(["opus", "gpt-5.4", "pro"], env);
-    expect(matches).toHaveLength(3);
-    const byId = new Map(matches.map((m) => [m.provider.id, m.models]));
-    expect(byId.get("anthropic_api")).toEqual(["opus"]);
-    expect(byId.get("openai_api")).toEqual(["gpt-5.4"]);
-    expect(byId.get("google_api")).toEqual(["pro"]);
-  });
-
-  it("drops a provider with no matching priority models", () => {
-    const env = () => "sk-…";
-    const matches = findProviderMatches(["opus"], env); // only Claude-shaped
-    expect(matches.map((m) => m.provider.id)).toEqual(["anthropic_api"]);
-  });
-
-  it("returns empty when no env vars are set", () => {
-    expect(findProviderMatches(["opus", "gpt-5.4"], () => undefined)).toEqual([]);
-  });
-});
-
-describe("buildWizardConfig — metered fallback", () => {
-  it("generates one openai_compatible service per (provider × matching model)", () => {
-    const env = () => "sk-…";
-    const meteredProviders = findProviderMatches(["opus", "gpt-5.4"], env);
-    const cfg = buildWizardConfig({
-      modelPriority: ["opus", "gpt-5.4"],
-      detectedHarnesses: [{ id: "claude_code", command: "claude" }],
-      meteredProviders,
-    });
-    // 1 subscription service (claude_code) + 2 metered (anthropic for opus, openai for gpt-5.4)
-    expect(Object.keys(cfg.services).sort()).toEqual([
-      "anthropic_api_opus",
-      "claude_code",
-      "openai_api_gpt-5_4", // dot replaced with underscore
-    ]);
-    const anthropic = cfg.services.anthropic_api_opus!;
-    expect(anthropic).toMatchObject({
-      type: "openai_compatible",
-      tier: "metered",
-      base_url: "https://api.anthropic.com/v1",
-      api_key: "${ANTHROPIC_API_KEY}", // env-interpolation token, not the actual key
-      model: "opus",
-    });
-    // Anthropic maps "opus" alias to a pinned API id
-    expect(anthropic.cli_model).toMatch(/^claude-opus/);
-    const openai = cfg.services["openai_api_gpt-5_4"]!;
-    expect(openai).toMatchObject({
-      type: "openai_compatible",
-      tier: "metered",
-      api_key: "${OPENAI_API_KEY}",
-      model: "gpt-5.4",
-      cli_model: "gpt-5.4", // OpenAI passes verbatim
-    });
-  });
-
-  it("never embeds the real env var value — only the ${VAR} placeholder", () => {
-    // Critical: we must not expand env at YAML write time, or the secret
-    // ends up on disk. The wizard writes the literal placeholder; the
-    // config loader resolves at startup.
-    const env = (n: string) => (n === "ANTHROPIC_API_KEY" ? "sk-secret-DO-NOT-LEAK" : undefined);
-    const meteredProviders = findProviderMatches(["opus"], env);
-    const cfg = buildWizardConfig({
-      modelPriority: ["opus"],
-      detectedHarnesses: [],
-      meteredProviders,
-    });
-    const yaml = renderWizardYaml(cfg);
+    const yaml = renderV3WizardYaml(cfg);
     expect(yaml).not.toContain("sk-secret-DO-NOT-LEAK");
     expect(yaml).toContain("${ANTHROPIC_API_KEY}");
-  });
-
-  it("renders an openai_compatible service with the right shape (no cli-only fields)", () => {
-    const env = () => "sk-…";
-    const meteredProviders = findProviderMatches(["opus"], env);
-    const cfg = buildWizardConfig({
-      modelPriority: ["opus"],
-      detectedHarnesses: [],
-      meteredProviders,
-    });
-    const yaml = renderWizardYaml(cfg);
-    // openai_compatible services should NOT carry harness/command (those
-    // are CLI-shape fields). Should carry base_url + api_key.
-    expect(yaml).toContain("type: openai_compatible");
-    expect(yaml).toContain("base_url:");
-    expect(yaml).toContain("api_key:");
-    expect(yaml).toContain("tier: metered");
-    // anthropic block should not have a `harness:` key (only CLI services do).
-    const anthropicBlock = yaml.split("anthropic_api_opus:")[1]!.split(/^\S/m)[0]!;
-    expect(anthropicBlock).not.toMatch(/^\s*harness:/m);
-    expect(anthropicBlock).not.toMatch(/^\s*command:/m);
   });
 });
