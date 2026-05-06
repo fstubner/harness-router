@@ -1,5 +1,5 @@
 /**
- * GitHub Copilot CLI dispatcher for harness-router-mcp.
+ * GitHub Copilot CLI dispatcher for harness-router.
  *
  * Dispatch:  copilot -p "<prompt>" --allow-all-tools --no-color
  *                    --output-format json --silent

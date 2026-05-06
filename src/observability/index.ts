@@ -1,5 +1,5 @@
 /**
- * OpenTelemetry initialization for harness-router-mcp.
+ * OpenTelemetry initialization for harness-router.
  *
  * Call `initObservability()` once at process startup (from the CLI or MCP
  * server entry points). Subsequent calls are no-ops. If the environment
@@ -19,13 +19,13 @@ import type { Span } from "@opentelemetry/api";
 
 import { VERSION } from "../version.js";
 
-const SERVICE_NAME_DEFAULT = "harness-router-mcp";
+const SERVICE_NAME_DEFAULT = "harness-router";
 const SERVICE_VERSION = VERSION;
 
 export interface InitObservabilityOpts {
   /** Override the OTLP endpoint. Defaults to OTEL_EXPORTER_OTLP_ENDPOINT or http://localhost:4318. */
   otlpUrl?: string;
-  /** Override the service name attached to spans. Defaults to harness-router-mcp. */
+  /** Override the service name attached to spans. Defaults to harness-router. */
   serviceName?: string;
   /** Inject instrumentations for tests — production uses auto-instrumentations. */
   instrumentations?: unknown[];
@@ -116,7 +116,7 @@ export async function initObservability(opts: InitObservabilityOpts = {}): Promi
     // and sees zero traces has no signal that init silently failed. Stderr
     // (not stdout) is intentional: stdout is reserved for MCP JSON-RPC.
     const msg = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[harness-router-mcp] OpenTelemetry SDK failed to start: ${msg}\n`);
+    process.stderr.write(`[harness-router] OpenTelemetry SDK failed to start: ${msg}\n`);
     return false;
   }
 }

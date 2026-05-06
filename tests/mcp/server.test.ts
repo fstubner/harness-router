@@ -91,7 +91,7 @@ async function startLinked(): Promise<{
   close: () => Promise<void>;
 }> {
   const server = new McpServer(
-    { name: "harness-router-mcp-test", version: "test" },
+    { name: "harness-router-test", version: "test" },
     { instructions: "test server" },
   );
   const holder = new RuntimeHolder(buildState());

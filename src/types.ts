@@ -1,5 +1,5 @@
 /**
- * Core types for harness-router-mcp.
+ * Core types for harness-router.
  *
  * Cross-cutting types used by dispatchers, the router, the quota tracker,
  * and the MCP surface.
@@ -127,7 +127,7 @@ export interface RouterConfig {
    * pass `services` or `models` to the tool, the router uses this list to
    * decide which services to fan out to. Absent (or empty) means "all
    * available services" (the historical default). Configured via
-   * `harness-router-mcp onboard`'s mixture-default step.
+   * `harness-router onboard`'s mixture-default step.
    */
   mixtureDefault?: readonly string[];
   geminiApiKey?: string;

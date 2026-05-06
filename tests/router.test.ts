@@ -492,7 +492,7 @@ describe("Router — no-routes error classification", () => {
     });
     const r = await noRoutesError(router);
     expect(r?.error).toMatch(/no services configured/i);
-    expect(r?.error).toMatch(/harness-router-mcp doctor/);
+    expect(r?.error).toMatch(/harness-router doctor/);
   });
 
   it("'nothing installed' when every dispatcher is unavailable", async () => {

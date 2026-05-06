@@ -1,5 +1,5 @@
 /**
- * OpenAI Codex CLI dispatcher for harness-router-mcp.
+ * OpenAI Codex CLI dispatcher for harness-router.
  *
  * Dispatch:  codex exec "<prompt>" --full-auto --json --skip-git-repo-check
  *                  [--model <m>] [--cd <dir>]

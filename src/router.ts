@@ -22,7 +22,7 @@
  * before silently dropping to Sonnet.
  *
  * Wraps the streaming generator in a router span so OTel observers see
- * `harness-router-mcp.router.{stream,route}` spans the same way as before.
+ * `harness-router.router.{stream,route}` spans the same way as before.
  */
 
 import { context, SpanStatusCode, trace } from "@opentelemetry/api";
@@ -111,9 +111,9 @@ async function* withRouterStreamSpan<T>(
   attrs: RouterSpanAttrs,
   produce: () => AsyncIterable<T>,
 ): AsyncGenerator<T> {
-  const tracer = trace.getTracer("harness-router-mcp", VERSION);
+  const tracer = trace.getTracer("harness-router", VERSION);
   const { "router.op": op, ...rest } = attrs;
-  const span = tracer.startSpan(`harness-router-mcp.router.${op}`, {
+  const span = tracer.startSpan(`harness-router.router.${op}`, {
     attributes: { ...rest, "router.op": op },
   });
   const t0 = Date.now();
@@ -346,7 +346,7 @@ export class Router {
             success: false,
             error:
               `No available routes — ${reasonPart}. ` +
-              "Run `harness-router-mcp doctor` to see what's installed and what's missing.",
+              "Run `harness-router doctor` to see what's installed and what's missing.",
           };
           yield { event: { type: "completion", result }, decision: null };
         }

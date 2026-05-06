@@ -1,5 +1,5 @@
 /**
- * harness-router-mcp — TypeScript rewrite.
+ * harness-router — TypeScript rewrite.
  *
  * Public library surface. Stable starting at R3.
  */

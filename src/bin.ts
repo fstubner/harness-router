@@ -1,23 +1,10 @@
 #!/usr/bin/env node
 /**
- * harness-router-mcp — CLI entrypoint.
+ * harness-router — CLI entrypoint.
  *
- * Usage:
- *   harness-router-mcp route "<prompt>"        Pick a service and dispatch once.
- *   harness-router-mcp list-services           Show enabled services.
- *   harness-router-mcp dashboard               Show quota + breaker status.
- *   harness-router-mcp dashboard --watch       Re-render every <interval> (default 1s).
- *   harness-router-mcp mcp                     Start the MCP server on stdio.
- *   harness-router-mcp mcp --http <port>       Start the MCP server over HTTP.
- *
- * Options (apply to all subcommands):
- *   --config <path>   Path to config.yaml. Falls back to $HARNESS_ROUTER_CONFIG,
- *                     then auto-detect.
- *   --interval <ms>   Dashboard refresh interval in ms (default: 1000).
- *
- * R3: `route` now consumes Router.stream so stdout chunks print live as the
- * dispatcher produces them. `dashboard --watch` re-renders the live view
- * every interval.
+ * Bare invocation (`npx harness-router`) starts the stdio MCP server —
+ * what hosts launch as a subprocess. Subcommands cover every other
+ * operator action; see `printUsage` for the full list.
  */
 
 import { parseArgs } from "node:util";
@@ -251,36 +238,46 @@ async function cmdDoctor(
 // Commands (R2 — MCP server)
 // ---------------------------------------------------------------------------
 
-async function cmdMcp(
-  configPath: string | undefined,
-  httpPort: number | undefined,
-): Promise<number> {
-  if (httpPort !== undefined) {
-    const buildOpts: { configPath?: string } = {};
-    if (configPath !== undefined) buildOpts.configPath = configPath;
-    const handle = await startMcpHttpServer({ ...buildOpts, port: httpPort });
-    process.stderr.write(`harness-router-mcp listening on http://localhost:${handle.port}/mcp\n`);
-    const shutdown = async (): Promise<void> => {
-      try {
-        await handle.close();
-      } finally {
-        process.exit(0);
-      }
-    };
-    process.on("SIGINT", () => void shutdown());
-    process.on("SIGTERM", () => void shutdown());
-    await new Promise<void>(() => {
-      /* never resolves */
-    });
-    return 0;
-  }
-
+/**
+ * Run the MCP server on stdio (the default when invoked with no subcommand).
+ * Hosts launch us as a subprocess and speak JSON-RPC over stdin/stdout.
+ */
+async function cmdStdio(configPath: string | undefined): Promise<number> {
   const buildOpts: { configPath?: string } = {};
   if (configPath !== undefined) buildOpts.configPath = configPath;
   const handle = await startMcpServer(buildOpts);
+  return waitForShutdown(handle.close);
+}
+
+/**
+ * Run the MCP server over Streamable HTTP. Default bind is 127.0.0.1:8765;
+ * set --bind to expose to the network (auto-creates a bearer token).
+ */
+async function cmdServe(
+  configPath: string | undefined,
+  opts: { port?: number; bind?: string; requireAuth?: boolean },
+): Promise<number> {
+  const startOpts: {
+    configPath?: string;
+    port?: number;
+    bind?: string;
+    requireAuth?: boolean;
+  } = {};
+  if (configPath !== undefined) startOpts.configPath = configPath;
+  if (opts.port !== undefined) startOpts.port = opts.port;
+  if (opts.bind !== undefined) startOpts.bind = opts.bind;
+  if (opts.requireAuth !== undefined) startOpts.requireAuth = opts.requireAuth;
+  const handle = await startMcpHttpServer(startOpts);
+  process.stderr.write(
+    `harness-router listening on http://${opts.bind ?? "127.0.0.1"}:${handle.port}/mcp\n`,
+  );
+  return waitForShutdown(handle.close);
+}
+
+async function waitForShutdown(close: () => Promise<void>): Promise<number> {
   const shutdown = async (): Promise<void> => {
     try {
-      await handle.close();
+      await close();
     } finally {
       process.exit(0);
     }
@@ -298,7 +295,7 @@ async function cmdMcp(
 // ---------------------------------------------------------------------------
 
 function printVersion(): void {
-  process.stdout.write(`harness-router-mcp ${VERSION}\n`);
+  process.stdout.write(`harness-router ${VERSION}\n`);
 }
 
 // ---------------------------------------------------------------------------
@@ -355,7 +352,7 @@ async function cmdInstall(opts: InstallCmdOpts): Promise<number> {
       "No supported MCP hosts detected on this machine. Looked for:\n" +
         targets.map((t) => `  - ${t.displayName} (${t.id})`).join("\n") +
         "\nIf one of these is installed in a non-default location, configure it manually using\n" +
-        "`harness-router-mcp install --target <id> --print` and paste the snippet into the host's config.\n",
+        "`harness-router install --target <id> --print` and paste the snippet into the host's config.\n",
     );
     return 1;
   }
@@ -393,7 +390,7 @@ async function cmdInstall(opts: InstallCmdOpts): Promise<number> {
   if (allOk && !opts.uninstall) {
     process.stdout.write(
       "\nDone. Restart the host(s) to pick up the new MCP server.\n" +
-        "Verify the underlying CLIs with `harness-router-mcp doctor`.\n",
+        "Verify the underlying CLIs with `harness-router doctor`.\n",
     );
   }
   return allOk ? 0 : 1;
@@ -402,31 +399,34 @@ async function cmdInstall(opts: InstallCmdOpts): Promise<number> {
 function printUsage(): void {
   process.stdout.write(
     [
-      "harness-router-mcp — route coding tasks across AI CLI harnesses",
+      "harness-router — route coding tasks across AI CLI harnesses",
       "",
       "Usage:",
-      "  harness-router-mcp onboard              Interactive first-run setup: detect CLIs, pick models",
+      "  npx harness-router                      Start the MCP server on stdio (the default; what hosts launch).",
+      "  harness-router serve --http <port>      Start the MCP server over HTTP.",
+      "  harness-router serve --bind <addr>      Bind HTTP to a specific address (default 127.0.0.1).",
+      "  harness-router onboard                  Interactive first-run setup: detect CLIs, pick models",
       "                                            + priority, choose MCP hosts to wire up.",
-      "  harness-router-mcp onboard --skip-install  Just write the config; don't install into MCP hosts.",
-      "  harness-router-mcp doctor               Health check across installed AI CLIs (installed/authed/dispatching).",
-      "  harness-router-mcp doctor --install     Try `npm install -g` for any missing/upgradable harness.",
-      "  harness-router-mcp doctor --harness <id>  Limit to one harness (claude_code|codex|cursor|gemini_cli|opencode|copilot).",
-      "  harness-router-mcp doctor --no-verify   Skip the live ~5-token dispatch probe.",
-      "  harness-router-mcp install              Detect MCP hosts and add `harness-router` entry to each.",
-      "  harness-router-mcp install --target <id>  Install into one host only (claude-desktop|claude-code|cursor|codex).",
-      "  harness-router-mcp install --print      Print the config snippet for each host (no file writes).",
-      "  harness-router-mcp uninstall            Remove the `harness-router` entry from each host.",
-      "  harness-router-mcp uninstall --target <id>  Remove from one host only.",
-      '  harness-router-mcp route "<prompt>"     Pick a service and dispatch (live streaming).',
-      "  harness-router-mcp list-services        Show enabled services.",
-      "  harness-router-mcp dashboard            Show quota + breaker status (one-shot).",
-      "  harness-router-mcp dashboard --watch    Re-render every --interval ms.",
-      "  harness-router-mcp mcp                  Start the MCP server (stdio).",
-      "  harness-router-mcp mcp --http <port>    Start the MCP server (HTTP).",
+      "  harness-router onboard --skip-install   Just write the config; don't install into MCP hosts.",
+      "  harness-router migrate                  Translate a v0.2 config.yaml to v0.3 (writes .v2.bak backup).",
+      "  harness-router doctor                   Health check across installed AI CLIs.",
+      "  harness-router doctor --install         Try `npm install -g` for any missing/upgradable harness.",
+      "  harness-router doctor --harness <id>    Limit to one harness.",
+      "  harness-router doctor --no-verify       Skip the live ~5-token dispatch probe.",
+      "  harness-router install                  Detect MCP hosts and add `harness-router` entry to each.",
+      "  harness-router install --target <id>    Install into one host only.",
+      "  harness-router install --print          Print the config snippet for each host (no file writes).",
+      "  harness-router uninstall                Remove the entry from each host.",
+      "  harness-router auth { create | show | rotate | revoke }",
+      "                                          Manage the bearer token used for non-loopback HTTP.",
+      '  harness-router route "<prompt>"         Pick a service and dispatch (live streaming).',
+      "  harness-router list-services            Show enabled services.",
+      "  harness-router dashboard                Show quota + breaker status (one-shot).",
+      "  harness-router dashboard --watch        Re-render every --interval ms.",
       "",
       "Options:",
       "  --config <path>   Path to config.yaml. Falls back to $HARNESS_ROUTER_CONFIG,",
-      "                    then auto-detects installed CLIs on PATH.",
+      "                    then ~/.harness-router/config.yaml.",
       "  --interval <ms>   Dashboard refresh interval (default 1000).",
       "",
     ].join("\n"),
@@ -452,6 +452,8 @@ export async function main(argv: string[]): Promise<number> {
       name: { type: "string" },
       "skip-install": { type: "boolean" },
       "no-backup": { type: "boolean" },
+      bind: { type: "string" },
+      "require-auth": { type: "boolean" },
     },
     allowPositionals: true,
     strict: false,
@@ -461,9 +463,18 @@ export async function main(argv: string[]): Promise<number> {
     printVersion();
     return 0;
   }
-  if (values.help || positionals.length === 0) {
+  if (values.help) {
     printUsage();
-    return values.help ? 0 : 1;
+    return 0;
+  }
+
+  // Bare invocation = stdio MCP server. This is what hosts launch when
+  // they spawn `npx harness-router` with no args.
+  if (positionals.length === 0) {
+    await initObservability();
+    const configPath =
+      (values.config as string | undefined) ?? process.env.HARNESS_ROUTER_CONFIG ?? undefined;
+    return cmdStdio(configPath);
   }
 
   // Initialize observability once per CLI invocation. Idempotent; no-op
@@ -549,17 +560,22 @@ export async function main(argv: string[]): Promise<number> {
       }
       return cmdDashboard(configPath, watch, intervalMs);
     }
-    case "mcp": {
+    case "serve": {
       let httpPort: number | undefined;
       if (values.http !== undefined) {
         const parsed = Number(values.http);
         if (Number.isNaN(parsed)) {
-          process.stderr.write(`mcp --http: expected a port number, got "${values.http}"\n`);
+          process.stderr.write(`serve --http: expected a port number, got "${values.http}"\n`);
           return 1;
         }
         httpPort = parsed;
       }
-      return cmdMcp(configPath, httpPort);
+      const serveOpts: { port?: number; bind?: string; requireAuth?: boolean } = {};
+      if (httpPort !== undefined) serveOpts.port = httpPort;
+      else serveOpts.port = 8765; // default HTTP port; spec
+      if (typeof values.bind === "string") serveOpts.bind = values.bind;
+      if (values["require-auth"] === true) serveOpts.requireAuth = true;
+      return cmdServe(configPath, serveOpts);
     }
     default:
       process.stderr.write(`unknown command: ${command}\n`);

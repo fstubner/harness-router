@@ -1,5 +1,5 @@
 /**
- * Claude Code CLI dispatcher for harness-router-mcp.
+ * Claude Code CLI dispatcher for harness-router.
  *
  * Dispatch:  claude -p "<prompt>" --output-format json
  *                  --allowedTools "Bash,Read,Edit,Write"

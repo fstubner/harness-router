@@ -1,5 +1,5 @@
 /**
- * MCP-host install targets — write `harness-router-mcp` into each MCP-aware
+ * MCP-host install targets — write `harness-router` into each MCP-aware
  * host's user-scoped config so the host picks it up on next launch.
  *
  * Per-host adapter implements:
@@ -449,12 +449,13 @@ export const INSTALL_TARGETS: readonly InstallTarget[] = [
   codexTarget,
 ];
 
-/** Default MCP server entry for harness-router-mcp. Override via flags. */
+/** Default MCP server entry for harness-router. Override via flags. */
 export function defaultEntry(): McpServerEntry {
   return {
     name: "harness-router",
     command: "npx",
-    args: ["-y", "harness-router-mcp", "mcp"],
+    // v0.3: bare invocation (no `mcp` subcommand) runs the stdio server.
+    args: ["-y", "harness-router"],
   };
 }
 

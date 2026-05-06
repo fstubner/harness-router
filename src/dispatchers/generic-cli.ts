@@ -1,5 +1,5 @@
 /**
- * Generic CLI dispatcher for harness-router-mcp.
+ * Generic CLI dispatcher for harness-router.
  *
  * Lets users add a new AI CLI tool to the router via YAML alone — no
  * TypeScript code changes required. The recipe (see `GenericCliRecipe` in

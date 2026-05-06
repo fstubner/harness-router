@@ -34,7 +34,7 @@ function tmpEnv(platform: NodeJS.Platform = "linux") {
 const ENTRY: McpServerEntry = {
   name: "harness-router",
   command: "npx",
-  args: ["-y", "harness-router-mcp", "mcp"],
+  args: ["-y", "harness-router", "mcp"],
 };
 
 // ---------------------------------------------------------------------------
@@ -56,7 +56,7 @@ describe("install — JSON hosts (Claude Desktop, Cursor)", () => {
         };
         expect(written.mcpServers["harness-router"]).toEqual({
           command: "npx",
-          args: ["-y", "harness-router-mcp", "mcp"],
+          args: ["-y", "harness-router", "mcp"],
         });
       });
 
@@ -206,11 +206,14 @@ describe("install — TOML host (Codex)", () => {
 // ---------------------------------------------------------------------------
 
 describe("install — defaultEntry", () => {
-  it("returns a sensible npx command", () => {
+  it("returns a sensible npx command (v0.3 bare invocation = stdio MCP)", () => {
     const e = defaultEntry();
     expect(e.command).toBe("npx");
-    expect(e.args).toContain("harness-router-mcp");
-    expect(e.args).toContain("mcp");
+    expect(e.args).toContain("harness-router");
+    // v0.3 dropped the `mcp` subcommand: bare `npx harness-router` IS the
+    // stdio MCP server. The host config carries no extra subcommand arg.
+    expect(e.args).not.toContain("mcp");
+    expect(e.args).toEqual(["-y", "harness-router"]);
     expect(e.name).toBe("harness-router");
   });
 });

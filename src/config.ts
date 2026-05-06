@@ -1,5 +1,5 @@
 /**
- * Configuration loading for harness-router-mcp.
+ * Configuration loading for harness-router.
  *
  * Two entry points:
  *   loadConfig(path?)   — if no path, auto-detects installed CLIs on PATH.
@@ -267,7 +267,7 @@ function logTierMigrations(migrations: TierMigration[]): void {
     .map((m) => `${m.service} (tier ${m.oldTier} → ${m.newTier})`)
     .join(", ");
   process.stderr.write(
-    `[harness-router-mcp] WARN: migrated v0.1 numeric tier values for ${migrations.length} ` +
+    `[harness-router] WARN: migrated v0.1 numeric tier values for ${migrations.length} ` +
       `service${migrations.length === 1 ? "" : "s"}: ${summary}. ` +
       `Update your config to use \`tier: subscription\` or \`tier: metered\` directly.\n`,
   );
@@ -359,7 +359,7 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
       rawType === "cli" || rawType === "openai_compatible" || rawType === "generic_cli";
     if (!isKnownType) {
       process.stderr.write(
-        `[harness-router-mcp] WARN: service "${name}" has unknown type "${rawType}" — ` +
+        `[harness-router] WARN: service "${name}" has unknown type "${rawType}" — ` +
           `falling back to "cli". Valid types: cli, openai_compatible, generic_cli.\n`,
       );
     }

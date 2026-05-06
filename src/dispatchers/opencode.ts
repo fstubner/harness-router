@@ -1,5 +1,5 @@
 /**
- * OpenCode CLI dispatcher for harness-router-mcp.
+ * OpenCode CLI dispatcher for harness-router.
  *
  * Dispatch:  opencode run "<prompt>" [--model <model>] [--cwd <dir>]
  *

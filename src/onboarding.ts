@@ -641,7 +641,7 @@ function paint(c: keyof typeof ANSI, s: string, on: boolean): string {
 
 export function renderReport(reports: HarnessReport[], colors: boolean): string {
   const lines: string[] = [];
-  lines.push(paint("BOLD", "harness-router-mcp — onboarding stack check", colors));
+  lines.push(paint("BOLD", "harness-router — onboarding stack check", colors));
   lines.push(paint("DIM", "─".repeat(54), colors));
 
   for (const r of reports) {
@@ -750,11 +750,7 @@ export function renderReport(reports: HarnessReport[], colors: boolean): string 
   lines.push(paint("BOLD", summary, colors));
   if (ready < reports.length) {
     lines.push(
-      paint(
-        "DIM",
-        "Re-run `harness-router-mcp doctor` after applying the next-step commands.",
-        colors,
-      ),
+      paint("DIM", "Re-run `harness-router doctor` after applying the next-step commands.", colors),
     );
   }
   return lines.join("\n");

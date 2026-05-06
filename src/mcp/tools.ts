@@ -512,7 +512,7 @@ export async function handleDashboard(deps: ToolDeps): Promise<string> {
   const breakers = state.router.circuitBreakerStatus();
 
   const lines: string[] = [];
-  lines.push("harness-router-mcp — status dashboard", "");
+  lines.push("harness-router — status dashboard", "");
 
   const priority = state.config.modelPriority ?? [];
   if (priority.length > 0) {

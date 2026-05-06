@@ -1,5 +1,5 @@
 /**
- * Gemini CLI dispatcher for harness-router-mcp.
+ * Gemini CLI dispatcher for harness-router.
  *
  * Dispatch:  gemini -p "<prompt>" [--file <path> ...] --output-format json
  *                   [--model <override>]

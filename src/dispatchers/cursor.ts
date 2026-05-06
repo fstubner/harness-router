@@ -1,5 +1,5 @@
 /**
- * Cursor headless CLI dispatcher for harness-router-mcp.
+ * Cursor headless CLI dispatcher for harness-router.
  *
  * Dispatch:  agent -p --trust --workspace <dir> --output-format json "<prompt>"
  *                  [--model <override>]

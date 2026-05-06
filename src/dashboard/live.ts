@@ -1,5 +1,5 @@
 /**
- * Live dashboard renderer for harness-router-mcp.
+ * Live dashboard renderer for harness-router.
  *
  * Pure function `renderDashboard(state)` → ANSI-formatted string. Consumed
  * by:
@@ -110,8 +110,8 @@ export function renderDashboard(state: DashboardState): string {
   if (ansi) out.push(CLEAR_SCREEN);
 
   // Header
-  if (ansi) out.push(`${BOLD}harness-router-mcp — live dashboard${RESET}`);
-  else out.push("harness-router-mcp — live dashboard");
+  if (ansi) out.push(`${BOLD}harness-router — live dashboard${RESET}`);
+  else out.push("harness-router — live dashboard");
   out.push(
     ansi
       ? `${DIM}refreshed ${new Date(now).toISOString()}${RESET}`

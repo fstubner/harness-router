@@ -1,5 +1,5 @@
 /**
- * MCP server entry points for harness-router-mcp.
+ * MCP server entry points for harness-router.
  *
  * Exposes:
  *   startMcpServer({ configPath })            — stdio transport (default).
@@ -28,7 +28,7 @@ import { compareBearerToken, openAuthTokenStore, parseBearerHeader } from "../au
 import { initObservability } from "../observability/index.js";
 import { VERSION } from "../version.js";
 
-const SERVER_NAME = "harness-router-mcp";
+const SERVER_NAME = "harness-router";
 const SERVER_VERSION = VERSION;
 
 const SERVER_INSTRUCTIONS =
@@ -41,7 +41,7 @@ const SERVER_INSTRUCTIONS =
   "`get_quota_status` (JSON) to inspect routing state. Pre-built prompts " +
   "(route-task, compare-models, health-check) are available via the host's " +
   "prompt picker. If no services are configured or reachable, run " +
-  "`harness-router-mcp doctor` from the terminal to see what's missing.";
+  "`harness-router doctor` from the terminal to see what's missing.";
 
 // ---------------------------------------------------------------------------
 // Builder — shared between stdio and HTTP entry points
@@ -73,15 +73,15 @@ function logStartupBanner(state: RuntimeState): void {
 
   const ready = reachable.map((s) => s.name).join(", ") || "(none)";
   process.stderr.write(
-    `[harness-router-mcp v${SERVER_VERSION}] ` +
+    `[harness-router v${SERVER_VERSION}] ` +
       `${reachable.length}/${services.length} services reachable ` +
       `(${subscription.length} subscription, ${metered.length} metered) | ` +
       `priority: ${priority.length > 0 ? priority.join(" → ") : "(empty — no models declared)"}\n`,
   );
-  process.stderr.write(`[harness-router-mcp] ready: ${ready}\n`);
+  process.stderr.write(`[harness-router] ready: ${ready}\n`);
   if (reachable.length === 0) {
     process.stderr.write(
-      "[harness-router-mcp] no services reachable. Run `harness-router-mcp doctor` " +
+      "[harness-router] no services reachable. Run `harness-router doctor` " +
         "to see what needs installing or authenticating.\n",
     );
   }

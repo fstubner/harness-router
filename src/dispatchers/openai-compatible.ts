@@ -1,5 +1,5 @@
 /**
- * OpenAI-compatible HTTP dispatcher for harness-router-mcp.
+ * OpenAI-compatible HTTP dispatcher for harness-router.
  *
  * Handles any provider that speaks POST /v1/chat/completions:
  *   - Ollama        (http://localhost:11434/v1)
