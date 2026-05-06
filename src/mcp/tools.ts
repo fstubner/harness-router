@@ -1,15 +1,15 @@
 /**
- * Tool registry for the harness-router-mcp server.
+ * Tool registry for the harness-router MCP server.
  *
- * The MCP surface is intentionally small:
- *   - `code`              — main routing tool (model-first walk + tier fallback)
- *   - `code_mixture`      — fan out to N services in parallel (compare outputs)
- *   - `dashboard`         — text status of every configured service
- *   - `get_quota_status`  — JSON quota + breaker state
+ * v0.3 collapsed the v0.2 four-tool surface to one:
+ *   - `code` — main routing tool. Mode "single" walks priority list and
+ *     dispatches once; mode "fanout" runs the prompt against multiple
+ *     services in parallel (the v0.2 `code_mixture` behaviour).
  *
- * `setup` (Claude-Code routing-hook bootstrap) is now a CLI subcommand
- * (`harness-router-mcp setup-routing-hook`) — it's a host-side install action,
- * not something an agent should ever call mid-conversation.
+ * Inspectable status — formerly the v0.2 `dashboard` and
+ * `get_quota_status` tools — moved to MCP resources at
+ * `harness-router://status` and `harness-router://status.json`. See
+ * src/mcp/resources.ts.
  *
  * When the caller sets `_meta.progressToken` on the `code` request, each
  * dispatcher event fires a `notifications/progress` so streaming-aware
@@ -71,33 +71,47 @@ const promptSchema = z
   .max(MAX_PROMPT_BYTES)
   .describe("The coding task or question (max 1 MB).");
 
+/**
+ * v0.3 single-tool surface.
+ *
+ * `mode` discriminates between dispatching once and fanning out:
+ *   - "single" (default) → walk priority list, return one result.
+ *   - "fanout"           → run prompt against multiple services in parallel,
+ *                          return one result per service (caller synthesises).
+ *
+ * `models` and `services` are only meaningful for `mode: "fanout"`. They're
+ * mutually exclusive — pass at most one. When neither is passed in fanout
+ * mode, the router uses `mixture_default` from config.yaml; if that's absent
+ * too, it fans out to every available service.
+ *
+ * `hints` is only meaningful for `mode: "single"`. Hints in fanout mode are
+ * silently ignored (rather than rejected) so callers don't have to branch
+ * based on mode at every call site.
+ */
 const codeInputShape = {
   prompt: promptSchema,
   files: filesSchema,
   workingDir: workingDirSchema.describe("Working directory for the CLI process."),
-  hints: routeHintsSchema.optional(),
-} as const;
-
-const mixtureInputShape = {
-  prompt: promptSchema,
-  files: filesSchema,
-  workingDir: workingDirSchema,
+  mode: z
+    .enum(["single", "fanout"])
+    .optional()
+    .describe('Dispatch mode. "single" (default) routes once; "fanout" runs in parallel.'),
+  hints: routeHintsSchema.optional().describe('Routing hints. Only honoured when mode="single".'),
   services: z
     .array(z.string().max(MAX_PATH_LEN))
     .max(MAX_FILES)
     .optional()
     .describe(
-      "Subset of service names. When omitted, falls back to the wizard-configured " +
-        "`mixture_default` from config.yaml, then to every available service.",
+      "Fanout-only: explicit subset of services. Mutually exclusive with `models`. " +
+        "When omitted, falls back to `mixture_default` from config.yaml, then to all available services.",
     ),
   models: z
     .array(z.string().max(MAX_PATH_LEN))
     .max(MAX_FILES)
     .optional()
     .describe(
-      "Alternative axis: list of canonical model names. The router resolves each to one " +
-        "service (highest-priority subscription route per model). Use this when you want to " +
-        "compare specific models rather than specific services. Mutually exclusive with `services`.",
+      "Fanout-only: list of canonical model keys. The router resolves each to one service " +
+        "(subscription route preferred, metered fallthrough). Mutually exclusive with `services`.",
     ),
 } as const;
 
@@ -139,10 +153,6 @@ export interface MixtureItem {
 
 function jsonText(value: unknown): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
-}
-
-function plainText(text: string): CallToolResult {
-  return { content: [{ type: "text", text }] };
 }
 
 function toHints(h: z.infer<typeof routeHintsSchema> | undefined): RouteHints {
@@ -289,13 +299,35 @@ async function runRoutedBuffered(
   return shapeRouteResponse(result, decision);
 }
 
+export type CodeResult =
+  | { mode: "single"; route: RouteResponse }
+  | { mode: "fanout"; results: MixtureItem[]; error?: string };
+
+/**
+ * Unified `code` tool dispatcher. Routes to single-shot or fan-out based on
+ * `input.mode`. The default is "single" — fanout is opt-in.
+ */
 export async function handleCode(
+  deps: ToolDeps,
+  input: z.infer<z.ZodObject<typeof codeInputShape>>,
+  extra?: ToolExtra,
+): Promise<CodeResult> {
+  const mode = input.mode ?? "single";
+  if (mode === "fanout") {
+    const out = await handleCodeFanout(deps, input, extra);
+    return { mode: "fanout", ...out };
+  }
+  const route = await handleCodeSingle(deps, input, extra);
+  return { mode: "single", route };
+}
+
+async function handleCodeSingle(
   deps: ToolDeps,
   input: z.infer<z.ZodObject<typeof codeInputShape>>,
   extra?: ToolExtra,
 ): Promise<RouteResponse> {
   const progressToken = extra?._meta?.progressToken;
-  return withMcpToolSpan({ "tool.name": "code" }, async () => {
+  return withMcpToolSpan({ "tool.name": "code", "code.mode": "single" }, async () => {
     const hints = toHints(input.hints);
     const prompt = input.prompt;
     const files = input.files ?? [];
@@ -307,12 +339,12 @@ export async function handleCode(
   });
 }
 
-export async function handleCodeMixture(
+async function handleCodeFanout(
   deps: ToolDeps,
-  input: z.infer<z.ZodObject<typeof mixtureInputShape>>,
+  input: z.infer<z.ZodObject<typeof codeInputShape>>,
   extra?: ToolExtra,
 ): Promise<{ results: MixtureItem[]; error?: string }> {
-  return withMcpToolSpan({ "tool.name": "code_mixture" }, async () => {
+  return withMcpToolSpan({ "tool.name": "code", "code.mode": "fanout" }, async () => {
     await ensureFreshConfig(deps.reloader);
     const state = deps.holder.state;
     const progressToken = extra?._meta?.progressToken;
@@ -564,7 +596,12 @@ export async function handleDashboard(deps: ToolDeps): Promise<string> {
 // Registration with McpServer
 // ---------------------------------------------------------------------------
 
-export const TOOL_NAMES = ["code", "code_mixture", "dashboard", "get_quota_status"] as const;
+/**
+ * v0.3 single-tool surface. Inspectable status (the v0.2 `dashboard` /
+ * `get_quota_status` tools) lives as an MCP resource at
+ * `harness-router://status` — see {@link registerResources}.
+ */
+export const TOOL_NAMES = ["code"] as const;
 
 export function registerTools(server: McpServer, deps: ToolDeps): void {
   server.registerTool(
@@ -572,47 +609,15 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
     {
       title: "Run a coding task",
       description:
-        "Route a coding task through the configured model priority list. " +
-        "Subscription-backed CLIs are tried first; metered API is the fallback. " +
-        "Use `hints.model` to bump a specific model to the front, or `hints.service` to force a specific dispatcher.",
+        'Route a coding task. mode: "single" (default) walks the configured model priority list ' +
+        "(subscription tier first, then metered) and returns one result; " +
+        '"fanout" runs the prompt against multiple services in parallel and returns one result per service ' +
+        "for the caller to synthesise. " +
+        "In single mode use `hints.model` / `hints.service` to override routing; in fanout mode use " +
+        "`models` (canonical model keys) or `services` (explicit dispatcher names) to choose the candidate set.",
       inputSchema: codeInputShape,
     },
     async (args, extra) => jsonText(await handleCode(deps, args, extra as ToolExtra)),
-  );
-
-  server.registerTool(
-    "code_mixture",
-    {
-      title: "Fan out a coding task to multiple services",
-      description:
-        "Run the same prompt against every available service in parallel. " +
-        "Returns one result per service; the caller synthesises. " +
-        "Useful for design questions where multiple perspectives help.",
-      inputSchema: mixtureInputShape,
-    },
-    async (args, extra) => jsonText(await handleCodeMixture(deps, args, extra as ToolExtra)),
-  );
-
-  server.registerTool(
-    "dashboard",
-    {
-      title: "Service status dashboard",
-      description:
-        "Multi-line text dashboard — model priority, per-service reachability, " +
-        "quota, circuit-breaker state, and the router's current pick.",
-      inputSchema: {} as const,
-    },
-    async () => plainText(await handleDashboard(deps)),
-  );
-
-  server.registerTool(
-    "get_quota_status",
-    {
-      title: "Get quota + breaker state (JSON)",
-      description: "Per-service quota and circuit-breaker state, JSON-shaped for tooling.",
-      inputSchema: {} as const,
-    },
-    async () => jsonText(await handleQuotaStatus(deps)),
   );
 }
 
@@ -632,14 +637,6 @@ export async function invokeTool(
       const parsed = z.object(codeInputShape).parse(args);
       return { kind: "json", data: await handleCode(deps, parsed) };
     }
-    case "code_mixture": {
-      const parsed = z.object(mixtureInputShape).parse(args);
-      return { kind: "json", data: await handleCodeMixture(deps, parsed) };
-    }
-    case "dashboard":
-      return { kind: "text", data: await handleDashboard(deps) };
-    case "get_quota_status":
-      return { kind: "json", data: await handleQuotaStatus(deps) };
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

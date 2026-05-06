@@ -43,6 +43,7 @@ import {
   type McpServerEntry,
 } from "./install/targets.js";
 import { runWizard } from "./onboarding/wizard.js";
+import { cmdMigrate } from "./cli/migrate.js";
 
 // ---------------------------------------------------------------------------
 // Commands (R1 + R3 streaming)
@@ -449,6 +450,7 @@ export async function main(argv: string[]): Promise<number> {
       uninstall: { type: "boolean" },
       name: { type: "string" },
       "skip-install": { type: "boolean" },
+      "no-backup": { type: "boolean" },
     },
     allowPositionals: true,
     strict: false,
@@ -520,6 +522,12 @@ export async function main(argv: string[]): Promise<number> {
       if (typeof values.config === "string") wizardOpts.configPath = values.config;
       if (values["skip-install"] === true) wizardOpts.skipInstall = true;
       return runWizard(wizardOpts);
+    }
+    case "migrate": {
+      const migrateOpts: { configPath?: string; noBackup?: boolean } = {};
+      if (typeof values.config === "string") migrateOpts.configPath = values.config;
+      if (values["no-backup"] === true) migrateOpts.noBackup = true;
+      return cmdMigrate(migrateOpts);
     }
     case "list-services":
       return cmdListServices(configPath);

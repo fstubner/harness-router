@@ -1,14 +1,14 @@
 /**
- * Unit tests for the MCP tool handlers.
+ * Unit tests for the v0.3 single-tool MCP surface.
  *
- * Bypass MCP transport entirely — call `invokeTool()` directly with mocked
- * router/quota/dispatcher state. Each of the 4 tools is exercised against
- * an in-memory holder so the test is fast and deterministic.
+ * The 4-tool v0.2 surface (code, code_mixture, dashboard, get_quota_status)
+ * collapsed to one tool: `code`, with `mode: "single" | "fanout"`.
+ * Status data is exposed as resources, exercised in resources.test.ts.
  */
 
 import { describe, expect, it } from "vitest";
 
-import { invokeTool, TOOL_NAMES } from "../../src/mcp/tools.js";
+import { invokeTool, TOOL_NAMES, handleDashboard, handleQuotaStatus } from "../../src/mcp/tools.js";
 import { RuntimeHolder, type RuntimeState } from "../../src/mcp/config-hot-reload.js";
 import { Router } from "../../src/router.js";
 import { QuotaCache } from "../../src/quota.js";
@@ -87,20 +87,33 @@ function buildHolder(
   return new RuntimeHolder(state);
 }
 
+// Discriminated-union helpers for the new CodeResult shape.
+type SingleData = {
+  mode: "single";
+  route: {
+    success: boolean;
+    service: string;
+    error?: string;
+    routing?: { model: string; tier: string };
+  };
+};
+type FanoutData = {
+  mode: "fanout";
+  results: Array<{ service: string; tier: string; output: string; success: boolean }>;
+  error?: string;
+};
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 describe("MCP tools — TOOL_NAMES", () => {
-  it("exports exactly the 4 tool names", () => {
-    expect(TOOL_NAMES).toHaveLength(4);
-    expect(new Set(TOOL_NAMES)).toEqual(
-      new Set(["code", "code_mixture", "dashboard", "get_quota_status"]),
-    );
+  it("exports a single tool: `code`", () => {
+    expect(TOOL_NAMES).toEqual(["code"]);
   });
 });
 
-describe("MCP tools — code", () => {
+describe("code — mode: single (default)", () => {
   it("routes to the highest-priority service and returns a routing block", async () => {
     const services = {
       a: makeService("a", { model: "model-a" }),
@@ -114,15 +127,12 @@ describe("MCP tools — code", () => {
 
     const r = await invokeTool("code", { prompt: "hi" }, { holder });
     expect(r.kind).toBe("json");
-    const data = r.data as {
-      success: boolean;
-      service: string;
-      routing?: { model: string; tier: string };
-    };
-    expect(data.success).toBe(true);
-    expect(data.service).toBe("a");
-    expect(data.routing?.model).toBe("model-a");
-    expect(data.routing?.tier).toBe("subscription");
+    const data = r.data as SingleData;
+    expect(data.mode).toBe("single");
+    expect(data.route.success).toBe(true);
+    expect(data.route.service).toBe("a");
+    expect(data.route.routing?.model).toBe("model-a");
+    expect(data.route.routing?.tier).toBe("subscription");
   });
 
   it("forces a specific service via hints.service", async () => {
@@ -137,8 +147,8 @@ describe("MCP tools — code", () => {
     const holder = buildHolder(services, dispatchers, ["model-a", "model-b"]);
 
     const r = await invokeTool("code", { prompt: "hi", hints: { service: "b" } }, { holder });
-    const data = r.data as { service: string };
-    expect(data.service).toBe("b");
+    const data = r.data as SingleData;
+    expect(data.route.service).toBe("b");
   });
 
   it("bumps an override model to the front via hints.model", async () => {
@@ -153,9 +163,9 @@ describe("MCP tools — code", () => {
     const holder = buildHolder(services, dispatchers, ["model-a", "model-b"]);
 
     const r = await invokeTool("code", { prompt: "hi", hints: { model: "model-b" } }, { holder });
-    const data = r.data as { service: string; routing?: { model: string } };
-    expect(data.service).toBe("b");
-    expect(data.routing?.model).toBe("model-b");
+    const data = r.data as SingleData;
+    expect(data.route.service).toBe("b");
+    expect(data.route.routing?.model).toBe("model-b");
   });
 
   it("returns success=false when every service is unavailable", async () => {
@@ -165,12 +175,22 @@ describe("MCP tools — code", () => {
     };
     const holder = buildHolder(services, dispatchers, ["model-a"]);
     const r = await invokeTool("code", { prompt: "hi" }, { holder });
-    const data = r.data as { success: boolean; error?: string };
-    expect(data.success).toBe(false);
+    const data = r.data as SingleData;
+    expect(data.route.success).toBe(false);
+  });
+
+  it("explicit mode: single is equivalent to default", async () => {
+    const services = { a: makeService("a", { model: "model-a" }) };
+    const dispatchers: Record<string, Dispatcher> = {
+      a: new FakeDispatcher("a", { output: "from a", service: "a", success: true }),
+    };
+    const holder = buildHolder(services, dispatchers, ["model-a"]);
+    const r = await invokeTool("code", { prompt: "hi", mode: "single" }, { holder });
+    expect((r.data as SingleData).mode).toBe("single");
   });
 });
 
-describe("MCP tools — code_mixture", () => {
+describe("code — mode: fanout", () => {
   it("fans out to all available services in parallel", async () => {
     const services = {
       a: makeService("a"),
@@ -184,11 +204,10 @@ describe("MCP tools — code_mixture", () => {
     };
     const holder = buildHolder(services, dispatchers);
 
-    const r = await invokeTool("code_mixture", { prompt: "hi" }, { holder });
+    const r = await invokeTool("code", { prompt: "hi", mode: "fanout" }, { holder });
     expect(r.kind).toBe("json");
-    const data = r.data as {
-      results: Array<{ service: string; success: boolean; output: string; tier: string }>;
-    };
+    const data = r.data as FanoutData;
+    expect(data.mode).toBe("fanout");
     expect(data.results).toHaveLength(3);
     for (const item of data.results) {
       expect(item.success).toBe(true);
@@ -204,8 +223,12 @@ describe("MCP tools — code_mixture", () => {
       b: new FakeDispatcher("b"),
     };
     const holder = buildHolder(services, dispatchers);
-    const r = await invokeTool("code_mixture", { prompt: "hi", services: ["b"] }, { holder });
-    const data = r.data as { results: Array<{ service: string }> };
+    const r = await invokeTool(
+      "code",
+      { prompt: "hi", mode: "fanout", services: ["b"] },
+      { holder },
+    );
+    const data = r.data as FanoutData;
     expect(data.results).toHaveLength(1);
     expect(data.results[0]!.service).toBe("b");
   });
@@ -216,8 +239,8 @@ describe("MCP tools — code_mixture", () => {
       a: new FakeDispatcher("a", { output: "", service: "a", success: true }, false),
     };
     const holder = buildHolder(services, dispatchers);
-    const r = await invokeTool("code_mixture", { prompt: "hi" }, { holder });
-    const data = r.data as { results: unknown[]; error?: string };
+    const r = await invokeTool("code", { prompt: "hi", mode: "fanout" }, { holder });
+    const data = r.data as FanoutData;
     expect(data.results).toEqual([]);
     expect(data.error).toBeDefined();
   });
@@ -243,19 +266,15 @@ describe("MCP tools — code_mixture", () => {
     };
     const holder = buildHolder(services, dispatchers, ["model-a", "model-b"]);
     const r = await invokeTool(
-      "code_mixture",
-      { prompt: "hi", models: ["model-a", "model-b"] },
+      "code",
+      { prompt: "hi", mode: "fanout", models: ["model-a", "model-b"] },
       { holder },
     );
-    const data = r.data as {
-      results: Array<{ service: string; tier: string; output: string }>;
-    };
+    const data = r.data as FanoutData;
     expect(data.results).toHaveLength(2);
     const byService = new Map(data.results.map((it) => [it.service, it]));
-    // model-a → subscription route preferred, even when both tiers are usable.
     expect(byService.get("a_sub")).toBeDefined();
     expect(byService.get("a_metered")).toBeUndefined();
-    // model-b only has a metered route — falls through to that.
     expect(byService.get("b_metered")).toBeDefined();
     expect(byService.get("b_metered")!.tier).toBe("metered");
   });
@@ -266,7 +285,6 @@ describe("MCP tools — code_mixture", () => {
       a_metered: makeService("a_metered", { model: "model-a", tier: "metered" }),
     };
     const dispatchers: Record<string, Dispatcher> = {
-      // subscription dispatcher is unavailable → router should fall through.
       a_sub: new FakeDispatcher("a_sub", { output: "", service: "a_sub", success: true }, false),
       a_metered: new FakeDispatcher("a_metered", {
         output: "from-metered",
@@ -275,8 +293,12 @@ describe("MCP tools — code_mixture", () => {
       }),
     };
     const holder = buildHolder(services, dispatchers, ["model-a"]);
-    const r = await invokeTool("code_mixture", { prompt: "hi", models: ["model-a"] }, { holder });
-    const data = r.data as { results: Array<{ service: string; tier: string }> };
+    const r = await invokeTool(
+      "code",
+      { prompt: "hi", mode: "fanout", models: ["model-a"] },
+      { holder },
+    );
+    const data = r.data as FanoutData;
     expect(data.results).toHaveLength(1);
     expect(data.results[0]!.service).toBe("a_metered");
     expect(data.results[0]!.tier).toBe("metered");
@@ -286,8 +308,12 @@ describe("MCP tools — code_mixture", () => {
     const services = { a: makeService("a", { model: "model-a" }) };
     const dispatchers: Record<string, Dispatcher> = { a: new FakeDispatcher("a") };
     const holder = buildHolder(services, dispatchers, ["model-a"]);
-    const r = await invokeTool("code_mixture", { prompt: "hi", models: ["model-z"] }, { holder });
-    const data = r.data as { results: unknown[]; error?: string };
+    const r = await invokeTool(
+      "code",
+      { prompt: "hi", mode: "fanout", models: ["model-z"] },
+      { holder },
+    );
+    const data = r.data as FanoutData;
     expect(data.results).toEqual([]);
     expect(data.error).toMatch(/model-z/);
   });
@@ -297,11 +323,11 @@ describe("MCP tools — code_mixture", () => {
     const dispatchers: Record<string, Dispatcher> = { a: new FakeDispatcher("a") };
     const holder = buildHolder(services, dispatchers, ["model-a"]);
     const r = await invokeTool(
-      "code_mixture",
-      { prompt: "hi", services: ["a"], models: ["model-a"] },
+      "code",
+      { prompt: "hi", mode: "fanout", services: ["a"], models: ["model-a"] },
       { holder },
     );
-    const data = r.data as { results: unknown[]; error?: string };
+    const data = r.data as FanoutData;
     expect(data.results).toEqual([]);
     expect(data.error).toMatch(/mutually exclusive/i);
   });
@@ -317,15 +343,14 @@ describe("MCP tools — code_mixture", () => {
       b: new FakeDispatcher("b"),
       c: new FakeDispatcher("c"),
     };
-    // Build holder, then patch the config to add a mixtureDefault whitelist.
     const holder = buildHolder(services, dispatchers, ["model-a", "model-b", "model-c"]);
     const state = holder.state;
     holder.replace({
       ...state,
       config: { ...state.config, mixtureDefault: ["a", "c"] },
     });
-    const r = await invokeTool("code_mixture", { prompt: "hi" }, { holder });
-    const data = r.data as { results: Array<{ service: string }> };
+    const r = await invokeTool("code", { prompt: "hi", mode: "fanout" }, { holder });
+    const data = r.data as FanoutData;
     const names = new Set(data.results.map((it) => it.service));
     expect(names).toEqual(new Set(["a", "c"]));
   });
@@ -347,35 +372,38 @@ describe("MCP tools — code_mixture", () => {
       ...state,
       config: { ...state.config, mixtureDefault: ["a"] },
     });
-    const r = await invokeTool("code_mixture", { prompt: "hi", services: ["b", "c"] }, { holder });
-    const data = r.data as { results: Array<{ service: string }> };
+    const r = await invokeTool(
+      "code",
+      { prompt: "hi", mode: "fanout", services: ["b", "c"] },
+      { holder },
+    );
+    const data = r.data as FanoutData;
     const names = new Set(data.results.map((it) => it.service));
     expect(names).toEqual(new Set(["b", "c"]));
   });
 });
 
-describe("MCP tools — introspection", () => {
-  it("get_quota_status returns combined quota + breaker state per service", async () => {
+describe("status helpers (consumed by resources)", () => {
+  it("handleQuotaStatus returns combined quota + breaker state per service", async () => {
     const services = { a: makeService("a") };
     const dispatchers: Record<string, Dispatcher> = { a: new FakeDispatcher("a") };
     const holder = buildHolder(services, dispatchers);
-    const r = await invokeTool("get_quota_status", {}, { holder });
-    expect(r.kind).toBe("json");
-    const data = r.data as Record<string, { circuitBreaker: { tripped: boolean } }>;
+    const data = await handleQuotaStatus({ holder });
     expect(data.a).toBeDefined();
-    expect(data.a!.circuitBreaker).toEqual({ tripped: false, failures: 0 });
+    expect((data.a as { circuitBreaker: { tripped: boolean } }).circuitBreaker).toEqual({
+      tripped: false,
+      failures: 0,
+    });
   });
 
-  it("dashboard returns multi-line text including token limits and model priority", async () => {
+  it("handleDashboard returns multi-line text including model priority", async () => {
     const services = {
       a: makeService("a", { model: "model-a", maxOutputTokens: 64_000, maxInputTokens: 1_000_000 }),
     };
     const dispatchers: Record<string, Dispatcher> = { a: new FakeDispatcher("a") };
     const holder = buildHolder(services, dispatchers, ["model-a"]);
-    const r = await invokeTool("dashboard", {}, { holder });
-    expect(r.kind).toBe("text");
-    const text = r.data as string;
-    expect(text).toContain("harness-router-mcp");
+    const text = await handleDashboard({ holder });
+    expect(text).toContain("harness-router");
     expect(text).toMatch(/output-cap/);
     expect(text).toMatch(/context/);
     expect(text).toContain("model-a");

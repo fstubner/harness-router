@@ -70,12 +70,9 @@ describe("startMcpHttpServer — single session", () => {
     const { client, close } = await newClient(server.port);
     try {
       const resp = await client.listTools();
-      // The router-side tools surface regardless of which services are
-      // configured — so even with services: {} we get the full tool list.
-      expect(resp.tools.length).toBeGreaterThan(0);
+      // v0.3 single-tool surface — regardless of services configured.
       const names = resp.tools.map((t) => t.name);
-      expect(names).toContain("code");
-      expect(names).toContain("dashboard");
+      expect(names).toEqual(["code"]);
     } finally {
       await close();
     }

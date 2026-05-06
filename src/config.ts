@@ -26,7 +26,7 @@ import type {
   ServiceConfig,
   ThinkingLevel,
 } from "./types.js";
-import { LegacyConfigError, parseV3Text } from "./v3/loader.js";
+import { parseV3Text } from "./v3/loader.js";
 import { v3ToRouterConfig } from "./v3/adapter.js";
 
 export { LegacyConfigError } from "./v3/loader.js";

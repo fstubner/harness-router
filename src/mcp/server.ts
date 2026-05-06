@@ -23,7 +23,7 @@ import {
   type RuntimeState,
 } from "./config-hot-reload.js";
 import { registerTools } from "./tools.js";
-import { registerPrompts } from "./prompts.js";
+import { registerResources } from "./resources.js";
 import { initObservability } from "../observability/index.js";
 import { VERSION } from "../version.js";
 
@@ -104,7 +104,7 @@ export async function buildMcpServer(opts: BuildMcpOptions = {}): Promise<BuiltM
     { instructions: SERVER_INSTRUCTIONS },
   );
   registerTools(server, { holder, reloader });
-  registerPrompts(server, { holder });
+  registerResources(server, { holder, reloader });
   return { server, holder, reloader };
 }
 
@@ -212,7 +212,7 @@ export async function startMcpHttpServer(opts: StartHttpOptions = {}): Promise<H
       { instructions: SERVER_INSTRUCTIONS },
     );
     registerTools(server, { holder, reloader });
-    registerPrompts(server, { holder });
+    registerResources(server, { holder, reloader });
     return server;
   };
 

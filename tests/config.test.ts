@@ -165,10 +165,7 @@ describe("watchConfig", () => {
   });
 
   it("calls onChange when the file's mtime changes (v0.3 YAML)", async () => {
-    const p = await writeTmpYaml(
-      "watch.yaml",
-      "priority: []\nmodels: {}\n",
-    );
+    const p = await writeTmpYaml("watch.yaml", "priority: []\nmodels: {}\n");
     const events: Array<{ time: number }> = [];
     const w = watchConfig(
       p,

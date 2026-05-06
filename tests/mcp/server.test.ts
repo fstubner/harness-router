@@ -12,6 +12,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { registerTools, TOOL_NAMES } from "../../src/mcp/tools.js";
+import { registerResources } from "../../src/mcp/resources.js";
 import { RuntimeHolder, type RuntimeState } from "../../src/mcp/config-hot-reload.js";
 import { Router } from "../../src/router.js";
 import { QuotaCache } from "../../src/quota.js";
@@ -95,6 +96,7 @@ async function startLinked(): Promise<{
   );
   const holder = new RuntimeHolder(buildState());
   registerTools(server, { holder });
+  registerResources(server, { holder });
 
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "test-client", version: "test" }, { capabilities: {} });
@@ -113,12 +115,13 @@ async function startLinked(): Promise<{
 }
 
 describe("MCP server — registration", () => {
-  it("registers all four tools via McpServer.registerTool", async () => {
+  it("registers a single `code` tool via McpServer.registerTool", async () => {
     const { client, close } = await startLinked();
     try {
       const resp = await client.listTools();
       const names = resp.tools.map((t) => t.name).sort();
       expect(names).toEqual([...TOOL_NAMES].sort());
+      expect(names).toEqual(["code"]);
       for (const t of resp.tools) {
         expect(t.inputSchema).toBeDefined();
         expect(t.inputSchema.type).toBe("object");
@@ -128,7 +131,7 @@ describe("MCP server — registration", () => {
     }
   });
 
-  it("code round-trips through the in-memory transport", async () => {
+  it("code round-trips through the in-memory transport (single mode default)", async () => {
     const { client, close } = await startLinked();
     try {
       const resp = await client.callTool({
@@ -140,46 +143,45 @@ describe("MCP server — registration", () => {
       expect(content).toHaveLength(1);
       expect(content[0]!.type).toBe("text");
       const parsed = JSON.parse(content[0]!.text) as {
-        success: boolean;
-        service: string;
-        output: string;
-        routing?: { model: string; tier: string };
+        mode: "single" | "fanout";
+        route?: {
+          success: boolean;
+          service: string;
+          output: string;
+          routing?: { model: string; tier: string };
+        };
       };
-      expect(parsed.success).toBe(true);
-      // First model in priority is claude-opus-4.7 → service "a".
-      expect(parsed.service).toBe("a");
-      expect(parsed.output.length).toBeGreaterThan(0);
-      expect(parsed.routing).toBeDefined();
-      expect(parsed.routing?.tier).toBe("subscription");
+      expect(parsed.mode).toBe("single");
+      expect(parsed.route?.success).toBe(true);
+      expect(parsed.route?.service).toBe("a");
+      expect((parsed.route?.output ?? "").length).toBeGreaterThan(0);
+      expect(parsed.route?.routing?.tier).toBe("subscription");
     } finally {
       await close();
     }
   });
 
-  it("dashboard returns a text content block", async () => {
+  it("status resource returns the dashboard text", async () => {
     const { client, close } = await startLinked();
     try {
-      const resp = await client.callTool({
-        name: "dashboard",
-        arguments: {},
-      });
-      const content = resp.content as Array<{ type: string; text: string }>;
-      expect(content[0]!.type).toBe("text");
-      expect(content[0]!.text).toContain("harness-router-mcp");
+      const resp = await client.readResource({ uri: "harness-router://status" });
+      const c = resp.contents[0] as { mimeType: string; text: string };
+      expect(c.mimeType).toBe("text/plain");
+      expect(c.text).toContain("harness-router");
     } finally {
       await close();
     }
   });
 
-  it("get_quota_status returns JSON with breaker state", async () => {
+  it("status.json resource returns per-service quota + breaker state", async () => {
     const { client, close } = await startLinked();
     try {
-      const resp = await client.callTool({
-        name: "get_quota_status",
-        arguments: {},
+      const resp = await client.readResource({
+        uri: "harness-router://status.json",
       });
-      const content = resp.content as Array<{ type: string; text: string }>;
-      const parsed = JSON.parse(content[0]!.text) as Record<string, unknown>;
+      const c = resp.contents[0] as { mimeType: string; text: string };
+      expect(c.mimeType).toBe("application/json");
+      const parsed = JSON.parse(c.text) as Record<string, unknown>;
       expect(Object.keys(parsed).sort()).toEqual(["a", "b"]);
     } finally {
       await close();
