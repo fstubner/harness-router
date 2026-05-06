@@ -19,22 +19,19 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 import { startMcpHttpServer, type HttpMcpHandle } from "../../src/mcp/server.js";
-import { QuotaCache } from "../../src/quota.js";
 
 let configPath: string;
 let server: HttpMcpHandle | undefined;
 
 beforeEach(async () => {
-  // Suppress any quota writes to disk so this test doesn't touch the host's
-  // real state.
-  vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
-
-  // Minimal config — empty services. Onboarding probes won't run during
-  // tests and the router's `list_available_services` should return an empty
-  // list. That's enough to exercise the HTTP plumbing.
+  // Redirect the SQLite quota state DB to a tmpdir so this test doesn't
+  // touch the host's real ~/.harness-router/state.db.
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "harness-router-http-test-"));
+  process.env["HARNESS_ROUTER_STATE_DB"] = path.join(tmp, "state.db");
+
+  // Minimal v0.3 config — empty models map. Enough to exercise HTTP plumbing.
   configPath = path.join(tmp, "config.yaml");
-  await fs.writeFile(configPath, "services: {}\n", "utf8");
+  await fs.writeFile(configPath, "priority: []\nmodels: {}\n", "utf8");
 
   // Avoid OTel SDK init noise in tests.
   process.env["OTEL_SDK_DISABLED"] = "true";
@@ -46,6 +43,7 @@ afterEach(async () => {
     server = undefined;
   }
   delete process.env["OTEL_SDK_DISABLED"];
+  delete process.env["HARNESS_ROUTER_STATE_DB"];
   vi.restoreAllMocks();
 });
 

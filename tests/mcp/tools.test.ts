@@ -6,12 +6,13 @@
  * an in-memory holder so the test is fast and deterministic.
  */
 
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { invokeTool, TOOL_NAMES } from "../../src/mcp/tools.js";
 import { RuntimeHolder, type RuntimeState } from "../../src/mcp/config-hot-reload.js";
 import { Router } from "../../src/router.js";
 import { QuotaCache } from "../../src/quota.js";
+import { QuotaStore } from "../../src/state/quota-store.js";
 import type { Dispatcher } from "../../src/dispatchers/base.js";
 import type {
   DispatchResult,
@@ -78,15 +79,13 @@ function buildHolder(
       .map((s) => s.model ?? "")
       .filter(Boolean);
   const config: RouterConfig = { services, modelPriority: priority };
-  const quota = new QuotaCache(dispatchers, { stateFile: ":memory-not-used:" });
+  const quota = new QuotaCache(dispatchers, {
+    store: new QuotaStore({ path: ":memory:", skipMkdir: true }),
+  });
   const router = new Router(config, quota, dispatchers);
   const state: RuntimeState = { config, dispatchers, quota, router, mtimeMs: 0 };
   return new RuntimeHolder(state);
 }
-
-beforeEach(() => {
-  vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
-});
 
 // ---------------------------------------------------------------------------
 // Tests

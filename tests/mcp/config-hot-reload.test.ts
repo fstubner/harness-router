@@ -21,15 +21,24 @@ import {
   RuntimeHolder,
 } from "../../src/mcp/config-hot-reload.js";
 import { CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC } from "../../src/circuit-breaker.js";
-import { QuotaCache } from "../../src/quota.js";
 
-// Suppress quota writes — we never want this test to touch the user's state file.
-beforeEach(() => {
-  vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
+// Redirect the SQLite quota state DB to a tmp path so this test never touches
+// the host's real ~/.harness-router/state.db.
+let stateDbDir: string;
+
+beforeEach(async () => {
+  stateDbDir = await fs.mkdtemp(path.join(os.tmpdir(), "harness-router-reload-state-"));
+  process.env["HARNESS_ROUTER_STATE_DB"] = path.join(stateDbDir, "state.db");
 });
 
-afterEach(() => {
+afterEach(async () => {
+  delete process.env["HARNESS_ROUTER_STATE_DB"];
   vi.restoreAllMocks();
+  try {
+    await fs.rm(stateDbDir, { recursive: true, force: true });
+  } catch {
+    // Best-effort.
+  }
 });
 
 async function writeConfig(dir: string, body: string): Promise<string> {

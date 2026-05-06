@@ -61,9 +61,12 @@ export interface QuotaCounterDelta {
 
 /**
  * Default DB location. Lives next to the user's config so they're easy to
- * spot/back up/move together.
+ * spot/back up/move together. Overridable via `HARNESS_ROUTER_STATE_DB`
+ * for tests and unusual deployment topologies.
  */
 export function defaultStateDbPath(): string {
+  const override = process.env.HARNESS_ROUTER_STATE_DB;
+  if (override) return override;
   return join(homedir(), ".harness-router", "state.db");
 }
 

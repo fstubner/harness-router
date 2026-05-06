@@ -5,7 +5,7 @@
  * server can exchange JSON-RPC frames entirely in-process.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -15,6 +15,7 @@ import { registerTools, TOOL_NAMES } from "../../src/mcp/tools.js";
 import { RuntimeHolder, type RuntimeState } from "../../src/mcp/config-hot-reload.js";
 import { Router } from "../../src/router.js";
 import { QuotaCache } from "../../src/quota.js";
+import { QuotaStore } from "../../src/state/quota-store.js";
 import type { Dispatcher } from "../../src/dispatchers/base.js";
 import type {
   DispatchResult,
@@ -76,13 +77,12 @@ function buildState(): RuntimeState {
     services,
     modelPriority: ["claude-opus-4.7", "gpt-5.4"],
   };
-  const quota = new QuotaCache(dispatchers);
+  const quota = new QuotaCache(dispatchers, {
+    store: new QuotaStore({ path: ":memory:", skipMkdir: true }),
+  });
   const router = new Router(config, quota, dispatchers);
   return { config, dispatchers, quota, router, mtimeMs: 0 };
 }
-
-// Suppress QuotaCache writes to disk.
-vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
 
 async function startLinked(): Promise<{
   client: Client;

@@ -1,53 +1,31 @@
 /**
- * Quota management for harness-router-mcp.
+ * Quota management for harness-router.
  *
- * Ported from `coding_agent.quota`. Two-layer approach:
+ * Two-layer approach:
  *   1. Reactive — quota state is updated from every dispatch response
  *      (rate-limit headers on 429s, or usage headers on success).
  *   2. Proactive — each dispatcher can optionally implement `checkQuota()`
  *      for a live snapshot. Results are cached with a TTL to avoid
  *      hammering provider APIs.
+ *
+ * Persistence is delegated to a {@link QuotaStore} (SQLite WAL). Multiple
+ * processes opening the same DB see each other's call counts in real time
+ * via the store's additive UPSERT — no per-PID delta files, no daemon, no
+ * IPC. The cache layer below holds an in-memory mirror for the current
+ * process; cross-process totals are read from the store on `fullStatus()`.
  */
 
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
-import { rename, unlink, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 import type { DispatchResult, QuotaInfo } from "./types.js";
 import type { Dispatcher } from "./dispatchers/base.js";
 import { parseLimit, parseRemaining } from "./dispatchers/shared/rate-limit-headers.js";
+import { QuotaStore, defaultStateDbPath } from "./state/quota-store.js";
 
 export const DEFAULT_QUOTA_TTL_MS = 300_000; // 5 minutes
 export const PROACTIVE_CHECK_TIMEOUT_MS = 15_000;
-
-/**
- * Default location for the persisted quota-state file.
- *
- * Lives under `~/.harness-router/` so multiple invocations from different
- * working directories share state — and we don't pollute whatever cwd the
- * user happens to launch us from. Override via `QuotaCacheOptions.stateFile`.
- */
-function defaultStateFile(): string {
-  return join(homedir(), ".harness-router", "quota_state.json");
-}
-
-/** Create the parent directory of a state file path if it doesn't exist. */
-function ensureStateDir(filePath: string): void {
-  try {
-    mkdirSync(dirname(filePath), { recursive: true });
-  } catch {
-    // Best-effort — if we can't create the dir, the subsequent write will
-    // surface the real error.
-  }
-}
 
 function monotonicSec(): number {
   return performance.now() / 1000;
@@ -61,7 +39,7 @@ export interface QuotaStateJSON {
   score: number;
   source: string;
   updatedAgeSec: number;
-  /** Total dispatch attempts this session (success + failure). */
+  /** Total dispatch attempts seen across all processes sharing the DB. */
   localCallCount: number;
   /** Subset of localCallCount that succeeded. */
   localSuccessCount: number;
@@ -110,54 +88,70 @@ export class QuotaState {
       resetAt: this.resetAt,
       score: this.score,
       source: this.source,
-      updatedAgeSec: Math.round((monotonicSec() - this.updatedAtSec) * 10) / 10,
+      updatedAgeSec: this.updatedAtSec === 0 ? 0 : monotonicSec() - this.updatedAtSec,
     };
   }
 }
 
 export interface QuotaCacheOptions {
   ttlMs?: number;
-  stateFile?: string;
-}
-
-/** Per-service local-call breakdown. Successes and failures tracked separately. */
-export interface LocalCounts {
-  total: number;
-  success: number;
-  failure: number;
+  /**
+   * Override the persistence layer. Tests typically pass a `QuotaStore`
+   * backed by `:memory:`. Production omits this and gets the default DB
+   * at `~/.harness-router/state.db`.
+   */
+  store?: QuotaStore;
 }
 
 /**
  * Manages quota state for all dispatchers.
+ *
+ * Holds a process-local in-memory snapshot for fast scoring; persists call
+ * counts to the shared SQLite store on every `recordResult`. The store's
+ * additive UPSERT means concurrent processes accumulate cleanly — no
+ * read-modify-write race.
  */
 export class QuotaCache {
   private readonly dispatchers: Record<string, Dispatcher>;
   private readonly ttlMs: number;
-  private readonly stateFile: string;
+  private readonly store: QuotaStore;
+  /** True when this cache opened its own store and owns the lifecycle. */
+  private readonly ownsStore: boolean;
   private states: Record<string, QuotaState> = {};
   /** performance.now() seconds of last proactive check per service. */
   private lastChecked: Record<string, number> = {};
-  private localCounts: Record<string, LocalCounts>;
-  /** Tail of in-flight async writes — `await` to flush before reload/shutdown. */
-  private writeChain: Promise<void> = Promise.resolve();
 
   constructor(dispatchers: Record<string, Dispatcher>, opts: QuotaCacheOptions = {}) {
     this.dispatchers = dispatchers;
     this.ttlMs = opts.ttlMs ?? DEFAULT_QUOTA_TTL_MS;
-    this.stateFile = opts.stateFile ?? defaultStateFile();
+
+    if (opts.store) {
+      this.store = opts.store;
+      this.ownsStore = false;
+    } else {
+      this.store = new QuotaStore({ path: defaultStateDbPath() });
+      this.ownsStore = true;
+      // One-shot legacy import: fold any v0.2 quota_state.json into the DB
+      // and delete it. Idempotent because the legacy file is removed after
+      // a successful import.
+      this.importLegacyState();
+    }
 
     for (const name of Object.keys(dispatchers)) {
       this.states[name] = new QuotaState(name);
     }
-    this.localCounts = this.loadLocalCounts();
   }
 
-  /**
-   * Wait for any in-flight `saveLocalCounts` writes to complete. Used during
-   * hot-reload so a fresh QuotaCache doesn't race the old one's last writes.
-   */
+  /** Wait for any pending writes. SQLite writes are synchronous; this is now a no-op. */
   async flush(): Promise<void> {
-    await this.writeChain;
+    // Retained as an `async` no-op so callers (hot-reload) keep their
+    // `await flush()` shape during the v0.2 → v0.3 cutover.
+    return;
+  }
+
+  /** Close the store if this cache owns it. Safe to call multiple times. */
+  close(): void {
+    if (this.ownsStore) this.store.close();
   }
 
   // ------------------------------------------------------------------
@@ -171,16 +165,15 @@ export class QuotaCache {
   }
 
   recordResult(service: string, result: DispatchResult): void {
-    const counts = this.localCounts[service] ?? { total: 0, success: 0, failure: 0 };
-    counts.total += 1;
-    if (result.success) counts.success += 1;
-    else counts.failure += 1;
-    this.localCounts[service] = counts;
-
-    // Chain the write onto writeChain so concurrent recordResult calls
-    // serialise their disk I/O — eliminates the read-modify-write race that
-    // produced flaky test failures and inter-process state-file corruption.
-    this.writeChain = this.writeChain.then(() => this.saveLocalCounts()).catch(() => undefined);
+    // Each dispatch is one delta-of-1 to the store. Concurrent processes
+    // accumulate cleanly via SQLite's additive UPSERT (`local_calls = local_calls
+    // + excluded.local_calls`). No read-modify-write race.
+    this.store.applyCounterDelta({
+      service,
+      total: 1,
+      success: result.success ? 1 : 0,
+      failure: result.success ? 0 : 1,
+    });
 
     if (!result.rateLimitHeaders && !result.rateLimited) {
       return;
@@ -223,15 +216,19 @@ export class QuotaCache {
 
   async fullStatus(): Promise<Record<string, QuotaStateJSON>> {
     const out: Record<string, QuotaStateJSON> = {};
+    // Single read of the store gives us cross-process totals for every
+    // service in the DB, including any service this process hasn't itself
+    // dispatched to yet.
+    const counts = this.store.loadAllCounters();
     for (const service of Object.keys(this.dispatchers)) {
       await this.maybeRefresh(service);
       const state = this.states[service] ?? new QuotaState(service);
-      const counts = this.localCounts[service];
+      const c = counts.get(service);
       out[service] = {
         ...state.toJSON(),
-        localCallCount: counts?.total ?? 0,
-        localSuccessCount: counts?.success ?? 0,
-        localFailureCount: counts?.failure ?? 0,
+        localCallCount: c?.total ?? 0,
+        localSuccessCount: c?.success ?? 0,
+        localFailureCount: c?.failure ?? 0,
       };
     }
     return out;
@@ -280,133 +277,37 @@ export class QuotaCache {
   }
 
   // ------------------------------------------------------------------
-  // Local count persistence
+  // Local counts: cross-process reads, per-call delta writes
   // ------------------------------------------------------------------
 
-  private loadLocalCounts(): Record<string, LocalCounts> {
-    if (!existsSync(this.stateFile)) {
-      return {};
-    }
-    try {
-      const raw = readFileSync(this.stateFile, "utf-8");
-      const data = JSON.parse(raw) as Record<
-        string,
-        {
-          local_calls?: number;
-          local_success?: number;
-          local_failure?: number;
-        } | null
-      >;
-      const out: Record<string, LocalCounts> = {};
-      for (const [k, v] of Object.entries(data)) {
-        if (!v) continue;
-        const total = typeof v.local_calls === "number" ? v.local_calls : 0;
-        const success = typeof v.local_success === "number" ? v.local_success : 0;
-        const failure = typeof v.local_failure === "number" ? v.local_failure : 0;
-        if (total > 0 || success > 0 || failure > 0) {
-          out[k] = { total, success, failure };
-        }
-      }
-      return out;
-    } catch {
-      return {};
-    }
-  }
-
   /**
-   * Build the on-disk payload, merging new counts over any existing state.
-   *
-   * Single-process safety: the surrounding `writeChain` serialises this
-   * process's writes, so within one process the read-then-write is
-   * sequentially consistent.
-   *
-   * Cross-process safety: NOT safe. If two processes (e.g. an MCP server
-   * and a parallel `harness-router-mcp doctor` invocation) both write at the
-   * same instant, the read-then-rename window allows the later writer to
-   * overwrite the earlier writer's counts for any service it doesn't
-   * itself touch. Audit pass A flagged this. The exposure is bounded —
-   * we only lose `local_calls / local_success / local_failure` deltas in
-   * the millisecond window between read and rename — and the realistic
-   * topology is single-process MCP server. Documented here rather than
-   * fixed because a proper fix (per-PID delta files merged at read time)
-   * is a substantial refactor and the intermediate hack (file-locking)
-   * doesn't compose well across Windows + POSIX.
-   *
-   * If you hit this in the wild — i.e. you're running multiple
-   * `harness-router-mcp` processes against the same `state_file` — set
-   * each process's `state_file` to a different path in config.yaml.
+   * Cross-process total counts for one service. Reads from the store every
+   * call so concurrent processes' counts are visible immediately.
    */
-  private buildStatePayload(): string {
-    let existing: Record<string, Record<string, unknown>> = {};
-    try {
-      if (existsSync(this.stateFile)) {
-        const raw = readFileSync(this.stateFile, "utf-8");
-        const parsed = JSON.parse(raw) as Record<string, Record<string, unknown>> | null;
-        if (parsed && typeof parsed === "object") {
-          existing = parsed;
-        }
-      }
-    } catch {
-      existing = {};
-    }
-    for (const [service, counts] of Object.entries(this.localCounts)) {
-      const bucket = existing[service] ?? {};
-      bucket["local_calls"] = counts.total;
-      bucket["local_success"] = counts.success;
-      bucket["local_failure"] = counts.failure;
-      existing[service] = bucket;
-    }
-    return JSON.stringify(existing, null, 2);
+  getCounts(service: string): { total: number; success: number; failure: number } {
+    const c = this.store.loadAllCounters().get(service);
+    return c ? { ...c } : { total: 0, success: 0, failure: 0 };
   }
 
-  /** Build a unique tmp path. PID + timestamp + random suffix prevents
-   *  collisions across processes and across millisecond-tick same-process writes. */
-  private buildTmpPath(): string {
-    const rand = Math.random().toString(36).slice(2, 8);
-    return `${this.stateFile}.${process.pid}.${Date.now()}.${rand}.tmp`;
-  }
+  // ------------------------------------------------------------------
+  // Legacy v0.2 quota_state.json import (one-shot at first boot)
+  // ------------------------------------------------------------------
 
-  /** Atomic write: write payload to a tmp sibling, then rename over the target. */
-  private async saveLocalCounts(): Promise<void> {
+  private importLegacyState(): void {
+    const legacyPath = join(homedir(), ".harness-router", "quota_state.json");
+    if (!existsSync(legacyPath)) return;
     try {
-      ensureStateDir(this.stateFile);
-      const tmp = this.buildTmpPath();
-      const payload = this.buildStatePayload();
-      await writeFile(tmp, payload);
-      try {
-        await rename(tmp, this.stateFile);
-      } catch (err) {
-        // Best-effort cleanup of the tmp file if the rename failed.
-        try {
-          await unlink(tmp);
-        } catch {
-          // ignore
-        }
-        throw err;
+      const text = readFileSync(legacyPath, "utf-8");
+      const n = this.store.importLegacyJson(text);
+      if (n > 0 && process.env.HARNESS_ROUTER_QUOTA_DEBUG === "1") {
+        process.stderr.write(`[quota] migrated ${n} services from legacy quota_state.json\n`);
       }
+      // Delete after successful import. Keeps the import idempotent across
+      // restarts (no double-counting on the next boot).
+      unlinkSync(legacyPath);
     } catch {
-      // Best-effort; the in-memory counts remain correct.
-    }
-  }
-
-  /** Synchronous variant for tests where awaiting the async write is awkward. */
-  saveLocalCountsSync(): void {
-    try {
-      ensureStateDir(this.stateFile);
-      const tmp = this.buildTmpPath();
-      writeFileSync(tmp, this.buildStatePayload());
-      try {
-        renameSync(tmp, this.stateFile);
-      } catch {
-        // Best-effort cleanup.
-        try {
-          unlinkSync(tmp);
-        } catch {
-          // ignore
-        }
-      }
-    } catch {
-      // Ignore.
+      // Best-effort. If the legacy file is unreadable or the import errors,
+      // we leave it on disk; the user can clean it up manually.
     }
   }
 }
