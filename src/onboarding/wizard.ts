@@ -205,7 +205,9 @@ export async function runWizard(opts: RunWizardOpts = {}): Promise<number> {
   out.write(`\n  Detected ${detected.length} of ${reports.length} CLIs.\n\n`);
 
   // ---- Step 2: pick model keys to route -----------------------------------
-  out.write("  Fetching OpenRouter catalog (used for the picker; free-text fallback always works)…\n");
+  out.write(
+    "  Fetching OpenRouter catalog (used for the picker; free-text fallback always works)…\n",
+  );
   const catalog = await fetchOpenRouterCatalogVerbose({ timeoutMs: 5000 });
 
   let typedKeys: string[] = [];
@@ -239,16 +241,18 @@ export async function runWizard(opts: RunWizardOpts = {}): Promise<number> {
   const detectedIds = detected.map((r) => r.harness);
   const choices: ModelChoice[] = [];
   for (const key of priority) {
-    const harness = await select<HarnessId | "__none__">({
+    const harness = await select<string>({
       message: `Which harness serves "${key}" on subscription tier? (choose "none" to skip)`,
       choices: [
-        ...detectedIds.map((id) => ({ name: id, value: id as HarnessId })),
+        ...detectedIds.map((id) => ({ name: id, value: id })),
         new Separator("—"),
-        { name: "(none — metered only or skip)", value: "__none__" as const },
+        { name: "(none — metered only or skip)", value: "__none__" },
       ],
       default: detectedIds[0] ?? "__none__",
     });
     const choice: ModelChoice = { key };
+    // HarnessId is a string alias; the sentinel guard above narrows away
+    // the "__none__" branch so the assignment is type-safe directly.
     if (harness !== "__none__") choice.subscriptionHarness = harness;
     choices.push(choice);
   }
@@ -371,7 +375,8 @@ async function pickFromCatalog(models: readonly CatalogModel[]): Promise<string[
     }
   }
   return checkbox<string>({
-    message: "Pick models to route (use space to select, enter to confirm; skip with no selections):",
+    message:
+      "Pick models to route (use space to select, enter to confirm; skip with no selections):",
     choices,
   });
 }

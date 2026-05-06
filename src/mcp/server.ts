@@ -24,6 +24,7 @@ import {
 } from "./config-hot-reload.js";
 import { registerTools } from "./tools.js";
 import { registerResources } from "./resources.js";
+import { compareBearerToken, openAuthTokenStore, parseBearerHeader } from "../auth/token.js";
 import { initObservability } from "../observability/index.js";
 import { VERSION } from "../version.js";
 
@@ -166,6 +167,13 @@ export interface StartHttpOptions extends BuildMcpOptions {
   port?: number;
   /** Path the MCP endpoint is mounted at. Defaults to `/mcp`. */
   route?: string;
+  /**
+   * Bind address. Default: `127.0.0.1`. Anything other than 127.0.0.1 / ::1 /
+   * localhost force-enables bearer-token auth — see src/auth/token.ts.
+   */
+  bind?: string;
+  /** When true, require bearer-token auth even for loopback. Default: false. */
+  requireAuth?: boolean;
 }
 
 /**
@@ -198,6 +206,38 @@ export async function startMcpHttpServer(opts: StartHttpOptions = {}): Promise<H
 
   const route = opts.route ?? "/mcp";
   const port = opts.port ?? 0;
+  const bind = opts.bind ?? "127.0.0.1";
+  const isLoopback = bind === "127.0.0.1" || bind === "::1" || bind === "localhost";
+
+  // Auth gate: optional for loopback (off by default), forced for non-loopback.
+  // The token is read from disk at server-start; rotating it requires a
+  // restart. That's intentional — token rotation is a deliberate event,
+  // not a hot-reload concern.
+  const authRequired = !isLoopback || opts.requireAuth === true;
+  let authToken: string | null = null;
+  if (authRequired) {
+    const store = openAuthTokenStore();
+    authToken = store.read();
+    if (!authToken) {
+      // Auto-create when binding non-loopback. The user can rotate later.
+      authToken = store.create();
+      process.stderr.write(
+        `[harness-router] auth: created bearer token at ${store.path} ` +
+          `(non-loopback bind requires auth). ` +
+          `Send via \`Authorization: Bearer <token>\`.\n`,
+      );
+    }
+  }
+
+  const isLoopbackRemote = (remote: string | undefined): boolean => {
+    if (!remote) return false;
+    return (
+      remote === "127.0.0.1" ||
+      remote === "::1" ||
+      remote === "::ffff:127.0.0.1" ||
+      remote.startsWith("127.")
+    );
+  };
 
   // One transport AND one McpServer per session. We track both so we can
   // close them on session end and during shutdown.
@@ -223,6 +263,25 @@ export async function startMcpHttpServer(opts: StartHttpOptions = {}): Promise<H
         res.statusCode = 404;
         res.end("not found");
         return;
+      }
+
+      // Auth gate. Loopback connections always bypass — the OS process
+      // boundary is the real boundary there, and forcing every local
+      // request to carry a token would just be friction. Non-loopback
+      // requests must present a matching bearer token.
+      if (authToken) {
+        const remote = req.socket.remoteAddress ?? undefined;
+        const localOnly = isLoopbackRemote(remote);
+        const allowBypass = localOnly && opts.requireAuth !== true;
+        if (!allowBypass) {
+          const provided = parseBearerHeader(req.headers.authorization);
+          if (!provided || !compareBearerToken(provided, authToken)) {
+            res.statusCode = 401;
+            res.setHeader("WWW-Authenticate", 'Bearer realm="harness-router"');
+            res.end("unauthorized");
+            return;
+          }
+        }
       }
       const sessionId = (req.headers["mcp-session-id"] as string | undefined) ?? undefined;
       let transport: StreamableHTTPServerTransport;
@@ -274,7 +333,7 @@ export async function startMcpHttpServer(opts: StartHttpOptions = {}): Promise<H
   });
 
   await new Promise<void>((resolve) => {
-    http.listen(port, () => resolve());
+    http.listen(port, bind, () => resolve());
   });
   const addr = http.address();
   const actualPort = typeof addr === "object" && addr ? addr.port : port;

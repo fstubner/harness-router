@@ -44,6 +44,7 @@ import {
 } from "./install/targets.js";
 import { runWizard } from "./onboarding/wizard.js";
 import { cmdMigrate } from "./cli/migrate.js";
+import { cmdAuth } from "./cli/auth.js";
 
 // ---------------------------------------------------------------------------
 // Commands (R1 + R3 streaming)
@@ -528,6 +529,14 @@ export async function main(argv: string[]): Promise<number> {
       if (typeof values.config === "string") migrateOpts.configPath = values.config;
       if (values["no-backup"] === true) migrateOpts.noBackup = true;
       return cmdMigrate(migrateOpts);
+    }
+    case "auth": {
+      const action = rest[0];
+      if (!action) {
+        process.stderr.write("auth: missing action. Expected: create | show | rotate | revoke\n");
+        return 1;
+      }
+      return cmdAuth(action);
     }
     case "list-services":
       return cmdListServices(configPath);

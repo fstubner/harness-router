@@ -42,16 +42,12 @@ describe("buildV3WizardConfig", () => {
   it("adds a metered route when addMetered is true and the env var is set", () => {
     const cfg = buildV3WizardConfig({
       priority: ["claude-opus-4-7"],
-      choices: [
-        { key: "claude-opus-4-7", subscriptionHarness: "claude_code", addMetered: true },
-      ],
+      choices: [{ key: "claude-opus-4-7", subscriptionHarness: "claude_code", addMetered: true }],
       harnessCommand,
       envFn: (n) => (n === "ANTHROPIC_API_KEY" ? "sk-test" : undefined),
     });
     expect(cfg.models["claude-opus-4-7"]?.metered).toBeDefined();
-    expect(cfg.models["claude-opus-4-7"]?.metered?.base_url).toBe(
-      "https://api.anthropic.com/v1",
-    );
+    expect(cfg.models["claude-opus-4-7"]?.metered?.base_url).toBe("https://api.anthropic.com/v1");
     // Never embeds the actual key value — uses the ${VAR} placeholder.
     expect(cfg.models["claude-opus-4-7"]?.metered?.api_key).toBe("${ANTHROPIC_API_KEY}");
   });
