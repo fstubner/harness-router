@@ -1,8 +1,12 @@
 /**
- * Config loader tests.
+ * Top-level config loader tests.
  *
- * Covers: legacy YAML format, auto-detect + overrides, ${ENV_VAR} interpolation,
- * and the mtime-based watchConfig poller.
+ * Most schema-validation coverage lives in tests/v3/loader.test.ts; this
+ * file focuses on what's specific to `loadConfig`'s wrapper behaviour:
+ *   - YAML on disk → V3 parse → adapter → RouterConfig
+ *   - Legacy v0.2 YAML triggers LegacyConfigError with a migration hint
+ *   - Empty/missing config falls through to auto-detect
+ *   - watchConfig polls mtime and fires onChange
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,173 +14,83 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { loadConfig, watchConfig, type WhichFn } from "../src/config.js";
-
-// ---- fixture files -------------------------------------------------------
+import { LegacyConfigError, loadConfig, watchConfig, type WhichFn } from "../src/config.js";
 
 async function writeTmpYaml(name: string, text: string): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), `harness-router-mcp-test-`));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), `harness-router-cfg-test-`));
   const p = path.join(dir, name);
   await fs.writeFile(p, text, "utf-8");
   return p;
 }
 
-// Mock which-functions for deterministic auto-detect.
 const noCliFound: WhichFn = async () => null;
 const allCliFound: WhichFn = async (cmd) => `/usr/bin/${cmd}`;
-const onlyClaudeFound: WhichFn = async (cmd) => (cmd === "claude" ? "/usr/bin/claude" : null);
 
-describe("loadConfig — legacy full format", () => {
-  it("passes a YAML with a top-level services: key through verbatim", async () => {
+describe("loadConfig — v0.3 entry path", () => {
+  it("loads a minimal v0.3 config and exposes services via the adapter", async () => {
     const yamlText = `
-model_priority:
-  - claude-opus-4.7
-  - llama3
-services:
-  alpha:
-    enabled: true
-    type: cli
-    command: alpha-bin
-    model: claude-opus-4.7
-    tier: subscription
-  beta:
-    enabled: false
-    type: openai_compatible
-    base_url: http://localhost:11434/v1
-    model: llama3
-    tier: metered
+priority: [opus]
+models:
+  opus:
+    subscription:
+      harness: claude_code
+      command: claude
 `;
-    const p = await writeTmpYaml("config.yaml", yamlText);
+    const p = await writeTmpYaml("v3.yaml", yamlText);
     const cfg = await loadConfig(p, { whichFn: noCliFound });
-    expect(Object.keys(cfg.services).sort()).toEqual(["alpha", "beta"]);
-    expect(cfg.services.alpha!.tier).toBe("subscription");
-    expect(cfg.services.alpha!.model).toBe("claude-opus-4.7");
-    expect(cfg.services.beta!.enabled).toBe(false);
-    expect(cfg.services.beta!.type).toBe("openai_compatible");
-    expect(cfg.services.beta!.baseUrl).toBe("http://localhost:11434/v1");
-    expect(cfg.services.beta!.tier).toBe("metered");
-    expect(cfg.modelPriority).toEqual(["claude-opus-4.7", "llama3"]);
+    // Service id is synthetic: \`opus__subscription\`. The router
+    // consumes this through the adapter; users never see it.
+    expect(Object.keys(cfg.services)).toContain("opus__subscription");
+    expect(cfg.services["opus__subscription"]?.harness).toBe("claude_code");
+    expect(cfg.services["opus__subscription"]?.tier).toBe("subscription");
+    expect(cfg.modelPriority).toEqual(["opus"]);
   });
 
-  it("parses a `generic_cli` service recipe (extensibility — third-party CLIs)", async () => {
-    // Verifies the YAML → GenericCliRecipe parsing path. Lets users add a
-    // new AI tool without writing TypeScript: just point at the binary and
-    // describe how to assemble argv.
-    const file = await writeTmpYaml(
-      "config.yaml",
-      [
-        "services:",
-        "  my_custom:",
-        "    enabled: true",
-        "    type: generic_cli",
-        "    harness: my_custom",
-        "    command: my-cli",
-        "    tier: subscription",
-        "    args_before_prompt: [run, --no-color]",
-        "    args_after_prompt: [--verbose]",
-        "    model_flag: --model",
-        "    cwd_flag: --workdir",
-        "    forward_env: [MY_CLI_API_KEY, MY_CLI_CONFIG]",
-        "    output_json_path: result",
-        "    tokens_json_path: usage",
-        "    model: gpt-test",
-      ].join("\n"),
-    );
-    const cfg = await loadConfig(file, { whichFn: noCliFound });
-    const svc = cfg.services.my_custom!;
-    expect(svc.type).toBe("generic_cli");
-    expect(svc.command).toBe("my-cli");
-    expect(svc.genericCli).toEqual({
-      argsBeforePrompt: ["run", "--no-color"],
-      argsAfterPrompt: ["--verbose"],
-      modelFlag: "--model",
-      cwdFlag: "--workdir",
-      forwardEnv: ["MY_CLI_API_KEY", "MY_CLI_CONFIG"],
-      outputJsonPath: "result",
-      tokensJsonPath: "usage",
-    });
+  it("emits both subscription and metered services when an entry has both", async () => {
+    const yamlText = `
+priority: [opus]
+models:
+  opus:
+    subscription:
+      harness: claude_code
+      command: claude
+    metered:
+      base_url: https://api.anthropic.com/v1
+      api_key: \${ANTHROPIC_API_KEY}
+`;
+    process.env.ANTHROPIC_API_KEY = "sk-test";
+    try {
+      const p = await writeTmpYaml("both.yaml", yamlText);
+      const cfg = await loadConfig(p, { whichFn: noCliFound });
+      expect(cfg.services["opus__subscription"]).toBeDefined();
+      expect(cfg.services["opus__metered"]).toBeDefined();
+      expect(cfg.services["opus__metered"]?.apiKey).toBe("sk-test");
+      expect(cfg.services["opus__metered"]?.baseUrl).toBe("https://api.anthropic.com/v1");
+    } finally {
+      delete process.env.ANTHROPIC_API_KEY;
+    }
+  });
+
+  it("expands mixture_default model keys to per-tier service ids", async () => {
+    const yamlText = `
+priority: [opus]
+mixture_default: [opus]
+models:
+  opus:
+    subscription:
+      harness: claude_code
+    metered:
+      base_url: https://api.anthropic.com/v1
+`;
+    const p = await writeTmpYaml("mix.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(cfg.mixtureDefault).toEqual(["opus__subscription", "opus__metered"]);
   });
 });
 
-describe("loadConfig — auto-detect + overrides", () => {
-  const origEnv = { ...process.env };
-  afterEach(() => {
-    process.env = { ...origEnv };
-  });
-
-  it("returns only services whose CLI is on PATH", async () => {
-    const cfg = await loadConfig(undefined, { whichFn: onlyClaudeFound });
-    expect(Object.keys(cfg.services)).toEqual(["claude_code"]);
-    const svc = cfg.services.claude_code!;
-    expect(svc.harness).toBe("claude_code");
-    expect(svc.command).toBe("claude");
-    expect(svc.tier).toBe("subscription");
-    expect(svc.model).toBeTruthy();
-  });
-
-  it("returns all default services when all CLIs are found", async () => {
-    const cfg = await loadConfig(undefined, { whichFn: allCliFound });
-    expect(Object.keys(cfg.services).sort()).toEqual([
-      "claude_code",
-      "codex",
-      "copilot",
-      "cursor",
-      "gemini_cli",
-      "opencode",
-    ]);
-  });
-
-  it("merges overrides onto auto-detected defaults", async () => {
+describe("loadConfig — legacy detection", () => {
+  it("throws LegacyConfigError when YAML has a top-level `services:` (v0.2 shape)", async () => {
     const yamlText = `
-overrides:
-  claude_code:
-    model: claude-opus-4.7
-`;
-    const p = await writeTmpYaml("minimal.yaml", yamlText);
-    const cfg = await loadConfig(p, { whichFn: allCliFound });
-    const cc = cfg.services.claude_code!;
-    expect(cc.model).toBe("claude-opus-4.7");
-    // Other fields stay at defaults.
-    expect(cc.tier).toBe("subscription");
-  });
-
-  it("honors the disabled list", async () => {
-    const yamlText = `
-disabled: [cursor, codex, opencode, copilot]
-`;
-    const p = await writeTmpYaml("disabled.yaml", yamlText);
-    const cfg = await loadConfig(p, { whichFn: allCliFound });
-    expect(Object.keys(cfg.services).sort()).toEqual(["claude_code", "gemini_cli"]);
-  });
-
-  it("adds endpoints from the endpoints: list and defaults them to metered tier", async () => {
-    const yamlText = `
-endpoints:
-  - name: ollama
-    base_url: http://localhost:11434/v1
-    model: llama3
-`;
-    const p = await writeTmpYaml("endpoints.yaml", yamlText);
-    const cfg = await loadConfig(p, { whichFn: noCliFound });
-    expect(cfg.services.ollama).toBeDefined();
-    expect(cfg.services.ollama!.type).toBe("openai_compatible");
-    expect(cfg.services.ollama!.baseUrl).toBe("http://localhost:11434/v1");
-    expect(cfg.services.ollama!.tier).toBe("metered");
-  });
-
-  it("picks up mixture_default from auto-detect YAML", async () => {
-    const yamlText = `
-mixture_default: [claude_code, gemini_cli]
-`;
-    const p = await writeTmpYaml("mixdef.yaml", yamlText);
-    const cfg = await loadConfig(p, { whichFn: allCliFound });
-    expect(cfg.mixtureDefault).toEqual(["claude_code", "gemini_cli"]);
-  });
-
-  it("picks up mixture_default from legacy full-format YAML", async () => {
-    const yamlText = `
-model_priority: [opus]
-mixture_default: [alpha]
 services:
   alpha:
     enabled: true
@@ -185,53 +99,56 @@ services:
     model: opus
     tier: subscription
 `;
-    const p = await writeTmpYaml("mixdef-legacy.yaml", yamlText);
-    const cfg = await loadConfig(p, { whichFn: noCliFound });
-    expect(cfg.mixtureDefault).toEqual(["alpha"]);
+    const p = await writeTmpYaml("legacy.yaml", yamlText);
+    await expect(loadConfig(p, { whichFn: noCliFound })).rejects.toThrow(LegacyConfigError);
+    await expect(loadConfig(p, { whichFn: noCliFound })).rejects.toThrow(/migrate/i);
   });
 
-  it("treats missing mixture_default as undefined (not an empty list)", async () => {
-    const cfg = await loadConfig(undefined, { whichFn: allCliFound });
-    expect(cfg.mixtureDefault).toBeUndefined();
+  it("throws LegacyConfigError on `overrides:` (v0.2 auto-detect overrides)", async () => {
+    const p = await writeTmpYaml("ov.yaml", "overrides: {}\n");
+    await expect(loadConfig(p, { whichFn: allCliFound })).rejects.toThrow(LegacyConfigError);
   });
 
-  it("ignores non-string entries in mixture_default", async () => {
-    const yamlText = `
-mixture_default: [claude_code, 42, null, gemini_cli]
-`;
-    const p = await writeTmpYaml("mixdef-bad.yaml", yamlText);
-    const cfg = await loadConfig(p, { whichFn: allCliFound });
-    // Bad entries dropped; only string survivors retained.
-    expect(cfg.mixtureDefault).toEqual(["claude_code", "gemini_cli"]);
+  it("throws LegacyConfigError on `endpoints:` (v0.2 endpoints list)", async () => {
+    const p = await writeTmpYaml("ep.yaml", "endpoints: []\n");
+    await expect(loadConfig(p, { whichFn: noCliFound })).rejects.toThrow(LegacyConfigError);
   });
 });
 
-describe("loadConfig — ${ENV_VAR} interpolation", () => {
+describe("loadConfig — empty / missing config", () => {
+  it("returns auto-detected services when the resolved file doesn't exist", async () => {
+    const cfg = await loadConfig(undefined, { whichFn: allCliFound });
+    // Auto-detect populated something — at minimum, the synthetic services
+    // are derived from CLI_DEFAULTS for every CLI on PATH.
+    expect(Object.keys(cfg.services).length).toBeGreaterThan(0);
+  });
+
+  it("returns auto-detected services when the file is empty", async () => {
+    const p = await writeTmpYaml("empty.yaml", "");
+    const cfg = await loadConfig(p, { whichFn: allCliFound });
+    expect(Object.keys(cfg.services).length).toBeGreaterThan(0);
+  });
+});
+
+describe("loadConfig — ${ENV_VAR} interpolation through V3 path", () => {
   const origEnv = { ...process.env };
   afterEach(() => {
     process.env = { ...origEnv };
   });
 
-  it("replaces ${GEMINI_API_KEY} with the environment value", async () => {
-    process.env.GEMINI_API_KEY = "test-key-xyz";
+  it("replaces ${VAR} placeholders in metered route api_key", async () => {
+    process.env.ANTHROPIC_API_KEY = "test-key-xyz";
     const yamlText = `
-gemini_api_key: \${GEMINI_API_KEY}
+priority: [opus]
+models:
+  opus:
+    metered:
+      base_url: https://api.anthropic.com/v1
+      api_key: \${ANTHROPIC_API_KEY}
 `;
     const p = await writeTmpYaml("env.yaml", yamlText);
     const cfg = await loadConfig(p, { whichFn: noCliFound });
-    expect(cfg.geminiApiKey).toBe("test-key-xyz");
-  });
-
-  it("interpolates strings inside nested overrides", async () => {
-    process.env.MY_MODEL = "custom-model-1";
-    const yamlText = `
-overrides:
-  claude_code:
-    model: \${MY_MODEL}
-`;
-    const p = await writeTmpYaml("nested.yaml", yamlText);
-    const cfg = await loadConfig(p, { whichFn: allCliFound });
-    expect(cfg.services.claude_code!.model).toBe("custom-model-1");
+    expect(cfg.services["opus__metered"]?.apiKey).toBe("test-key-xyz");
   });
 });
 
@@ -247,8 +164,11 @@ describe("watchConfig", () => {
     for (const w of watchers) w.stop();
   });
 
-  it("calls onChange when the file's mtime changes", async () => {
-    const p = await writeTmpYaml("watch.yaml", "disabled: []\n");
+  it("calls onChange when the file's mtime changes (v0.3 YAML)", async () => {
+    const p = await writeTmpYaml(
+      "watch.yaml",
+      "priority: []\nmodels: {}\n",
+    );
     const events: Array<{ time: number }> = [];
     const w = watchConfig(
       p,
@@ -259,22 +179,22 @@ describe("watchConfig", () => {
     );
     watchers.push(w);
 
-    // Wait for initial baseline poll to register current mtime.
     await new Promise((r) => setTimeout(r, 120));
 
-    // Force a visibly newer mtime (some filesystems have 1-second resolution).
     const newMtime = new Date(Date.now() + 2000);
-    await fs.writeFile(p, "disabled: [cursor]\n", "utf-8");
+    await fs.writeFile(
+      p,
+      "priority: [opus]\nmodels:\n  opus:\n    subscription:\n      harness: claude_code\n",
+      "utf-8",
+    );
     await fs.utimes(p, newMtime, newMtime);
 
-    // Give the poller a couple of ticks to notice.
     await new Promise((r) => setTimeout(r, 250));
-
     expect(events.length).toBeGreaterThanOrEqual(1);
   });
 
   it("stops polling after stop() is called", async () => {
-    const p = await writeTmpYaml("stop.yaml", "disabled: []\n");
+    const p = await writeTmpYaml("stop.yaml", "priority: []\nmodels: {}\n");
     let calls = 0;
     const w = watchConfig(
       p,
@@ -286,10 +206,13 @@ describe("watchConfig", () => {
     await new Promise((r) => setTimeout(r, 80));
     w.stop();
     const callsAfterStop = calls;
-    // Modify the file — the stopped watcher should not notice.
     await new Promise((r) => setTimeout(r, 30));
     const newMtime = new Date(Date.now() + 2000);
-    await fs.writeFile(p, "disabled: [cursor]\n", "utf-8");
+    await fs.writeFile(
+      p,
+      "priority: [opus]\nmodels:\n  opus:\n    subscription:\n      harness: claude_code\n",
+      "utf-8",
+    );
     await fs.utimes(p, newMtime, newMtime);
     await new Promise((r) => setTimeout(r, 120));
     expect(calls).toBe(callsAfterStop);

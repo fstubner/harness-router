@@ -340,19 +340,20 @@ describe("onboard()", () => {
     const os = await import("node:os");
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "onboard-generic-"));
     const configPath = path.join(tmpDir, "config.yaml");
+    // v0.3 config shape — generic_cli harness lives under a model entry's
+    // subscription route. The onboard probe still discovers the harness id
+    // and surfaces the auth_command from generic_cli.auth_command.
     await fs.writeFile(
       configPath,
       [
-        "services:",
-        "  my_custom:",
-        "    enabled: true",
-        "    type: generic_cli",
-        "    harness: my_custom",
-        "    command: my-cli",
-        "    tier: 2",
-        "    weight: 1.0",
-        "    cli_capability: 1.0",
-        "    auth_command: 'my-cli auth login'",
+        "priority: [custom-model]",
+        "models:",
+        "  custom-model:",
+        "    subscription:",
+        "      harness: my_custom",
+        "      command: my-cli",
+        "      generic_cli:",
+        "        auth_command: 'my-cli auth login'",
       ].join("\n"),
       "utf8",
     );

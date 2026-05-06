@@ -26,6 +26,10 @@ import type {
   ServiceConfig,
   ThinkingLevel,
 } from "./types.js";
+import { LegacyConfigError, parseV3Text } from "./v3/loader.js";
+import { v3ToRouterConfig } from "./v3/adapter.js";
+
+export { LegacyConfigError } from "./v3/loader.js";
 
 // ---------------------------------------------------------------------------
 // Built-in defaults for auto-detected CLIs.
@@ -593,10 +597,11 @@ export async function loadConfig(
   }
 
   let raw: Record<string, unknown> = {};
+  let rawText: string | undefined;
   if (resolvedPath) {
     try {
-      const text = await fs.readFile(resolvedPath, "utf-8");
-      const parsed = yaml.load(text);
+      rawText = await fs.readFile(resolvedPath, "utf-8");
+      const parsed = yaml.load(rawText);
       if (parsed && typeof parsed === "object") {
         raw = interpolateTree(parsed) as Record<string, unknown>;
       }
@@ -606,7 +611,20 @@ export async function loadConfig(
     }
   }
 
+  // ----- v0.3 entry point ---------------------------------------------------
+  // Detect the new model-keyed shape FIRST. parseV3Text throws
+  // LegacyConfigError when it sees `services:`/`overrides:`/`endpoints:` at
+  // top level without `models:`, so we let it run for any non-empty file and
+  // fall through to auto-detect only when the file is missing/empty.
+  if (rawText !== undefined && rawText.trim().length > 0) {
+    const v3 = parseV3Text(rawText, (n: string) => process.env[n]);
+    return v3ToRouterConfig(v3);
+  }
+
   // Legacy full format: explicit `services:` block.
+  // (Unreachable in v0.3 — parseV3Text above would have thrown
+  // LegacyConfigError for any file with this shape. Kept for the synthetic
+  // path through detectServices which constructs `raw` programmatically.)
   if (raw.services && typeof raw.services === "object") {
     return buildLegacyConfig(raw);
   }

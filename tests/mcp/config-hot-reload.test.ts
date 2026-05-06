@@ -48,22 +48,21 @@ async function writeConfig(dir: string, body: string): Promise<string> {
 }
 
 function minimalConfig(): string {
-  // One service is enough — the test trips its breaker, edits the file to
-  // bump mtime, triggers maybeReload, and verifies the new router's breaker
-  // for the same service is still tripped with approximately the same
-  // remaining cooldown.
+  // v0.3 shape — one model with a subscription route. The synthetic service
+  // id used by the router/breaker is `alpha__subscription` (model + tier).
   return [
-    "services:",
+    "priority: [alpha]",
+    "models:",
     "  alpha:",
-    "    enabled: true",
-    "    type: cli",
-    "    harness: claude_code",
-    "    command: claude",
-    "    tier: 1",
-    "    weight: 1.0",
-    "    cli_capability: 1.0",
+    "    subscription:",
+    "      harness: claude_code",
+    "      command: claude",
   ].join("\n");
 }
+
+/** Synthetic service id matching what v3ToRouterConfig produces. */
+const ALPHA_SVC = "alpha__subscription";
+const BETA_SVC = "beta__subscription";
 
 async function bumpMtime(file: string, body: string): Promise<void> {
   // Wait long enough for mtime to actually advance on coarse-grained
@@ -83,7 +82,7 @@ describe("ConfigHotReloader — circuit-breaker preservation", () => {
     const reloader = new ConfigHotReloader(holder, configPath);
 
     // Trip the breaker with a known cooldown (60 s).
-    const breaker = holder.state.router.getBreaker("alpha")!;
+    const breaker = holder.state.router.getBreaker(ALPHA_SVC)!;
     breaker.trip(60);
     const oldRemaining = breaker.cooldownRemaining();
     expect(breaker.isTripped).toBe(true);
@@ -99,7 +98,7 @@ describe("ConfigHotReloader — circuit-breaker preservation", () => {
     // approximately the original remaining time. We allow a small drift
     // window for the work the reload itself does (parse + dispatcher
     // construction); on this machine that's well under a second.
-    const newBreaker = holder.state.router.getBreaker("alpha")!;
+    const newBreaker = holder.state.router.getBreaker(ALPHA_SVC)!;
     expect(newBreaker.isTripped).toBe(true);
     const newRemaining = newBreaker.cooldownRemaining();
     expect(newRemaining).toBeGreaterThan(oldRemaining - 5);
@@ -117,30 +116,27 @@ describe("ConfigHotReloader — circuit-breaker preservation", () => {
     const holder = new RuntimeHolder(state);
     const reloader = new ConfigHotReloader(holder, configPath);
 
-    holder.state.router.getBreaker("alpha")!.trip(60);
+    holder.state.router.getBreaker(ALPHA_SVC)!.trip(60);
 
-    // Replace the file with a config that omits `alpha`.
+    // Replace the file with a config that omits alpha.
     await bumpMtime(
       configPath,
       [
-        "services:",
+        "priority: [beta]",
+        "models:",
         "  beta:",
-        "    enabled: true",
-        "    type: cli",
-        "    harness: codex",
-        "    command: codex",
-        "    tier: 1",
-        "    weight: 1.0",
-        "    cli_capability: 1.0",
+        "    subscription:",
+        "      harness: codex",
+        "      command: codex",
       ].join("\n"),
     );
     const reloaded = await reloader.maybeReload();
     expect(reloaded).toBe(true);
 
     // alpha is gone — no breaker for it.
-    expect(holder.state.router.getBreaker("alpha")).toBeUndefined();
+    expect(holder.state.router.getBreaker(ALPHA_SVC)).toBeUndefined();
     // beta is fresh — should be untripped.
-    const beta = holder.state.router.getBreaker("beta")!;
+    const beta = holder.state.router.getBreaker(BETA_SVC)!;
     expect(beta.isTripped).toBe(false);
   });
 
