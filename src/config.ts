@@ -29,8 +29,6 @@ import type {
 import { parseV3Text } from "./v3/loader.js";
 import { v3ToRouterConfig } from "./v3/adapter.js";
 
-export { LegacyConfigError } from "./v3/loader.js";
-
 // ---------------------------------------------------------------------------
 // Built-in defaults for auto-detected CLIs.
 //

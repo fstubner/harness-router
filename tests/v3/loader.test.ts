@@ -1,18 +1,19 @@
 /**
  * Tests for the v0.3 config loader.
  *
- * Covers: shape validation, env-var interpolation, legacy detection,
- * cross-reference checks (priority/mixture_default → models), HTTP auth
- * force-on for non-loopback bind.
+ * Covers: shape validation, env-var interpolation, multi-route support
+ * (single-object shorthand vs array form), cross-reference checks
+ * (priority/mixture_default → models), HTTP auth force-on for non-loopback
+ * bind.
  */
 
 import { describe, expect, it } from "vitest";
 
-import { LegacyConfigError, parseV3Text } from "../../src/v3/loader.js";
+import { parseV3Text } from "../../src/v3/loader.js";
 import { V3ConfigError } from "../../src/v3/types.js";
 
 describe("v0.3 loader — happy path", () => {
-  it("parses a minimal valid config", () => {
+  it("parses a minimal valid config (single subscription, shorthand)", () => {
     const yaml = `
 priority: [opus]
 models:
@@ -22,8 +23,28 @@ models:
 `;
     const cfg = parseV3Text(yaml);
     expect(cfg.priority).toEqual(["opus"]);
-    expect(cfg.models.opus?.subscription?.harness).toBe("claude_code");
+    expect(cfg.models.opus?.subscription).toHaveLength(1);
+    expect(cfg.models.opus?.subscription?.[0]?.harness).toBe("claude_code");
     expect(cfg.models.opus?.metered).toBeUndefined();
+  });
+
+  it("parses array form for multi-harness subscription", () => {
+    const yaml = `
+priority: [opus]
+models:
+  opus:
+    subscription:
+      - harness: claude_code
+      - harness: cursor
+      - harness: opencode
+`;
+    const cfg = parseV3Text(yaml);
+    expect(cfg.models.opus?.subscription).toHaveLength(3);
+    expect(cfg.models.opus?.subscription?.map((r) => r.harness)).toEqual([
+      "claude_code",
+      "cursor",
+      "opencode",
+    ]);
   });
 
   it("parses both subscription and metered routes for one model", () => {
@@ -38,9 +59,26 @@ models:
       api_key: \${ANTHROPIC_API_KEY}
 `;
     const cfg = parseV3Text(yaml, (n) => (n === "ANTHROPIC_API_KEY" ? "sk-test" : undefined));
-    expect(cfg.models.opus?.subscription?.harness).toBe("claude_code");
-    expect(cfg.models.opus?.metered?.api_key).toBe("sk-test");
-    expect(cfg.models.opus?.metered?.base_url).toBe("https://api.anthropic.com/v1");
+    expect(cfg.models.opus?.subscription?.[0]?.harness).toBe("claude_code");
+    expect(cfg.models.opus?.metered?.[0]?.api_key).toBe("sk-test");
+    expect(cfg.models.opus?.metered?.[0]?.base_url).toBe("https://api.anthropic.com/v1");
+  });
+
+  it("parses multi-route metered (e.g. Anthropic API + local proxy)", () => {
+    const yaml = `
+priority: [opus]
+models:
+  opus:
+    metered:
+      - base_url: https://api.anthropic.com/v1
+        api_key: \${ANTHROPIC_API_KEY}
+      - base_url: http://localhost:11434/v1
+        api_key: ollama
+`;
+    const cfg = parseV3Text(yaml, () => "x");
+    expect(cfg.models.opus?.metered).toHaveLength(2);
+    expect(cfg.models.opus?.metered?.[0]?.base_url).toMatch(/anthropic/);
+    expect(cfg.models.opus?.metered?.[1]?.base_url).toMatch(/localhost/);
   });
 
   it("interpolates ${VAR} references in strings", () => {
@@ -53,8 +91,8 @@ models:
       api_key: \${MY_KEY}
 `;
     const cfg = parseV3Text(yaml, (n) => ({ MY_URL: "http://x", MY_KEY: "k" })[n]);
-    expect(cfg.models.m?.metered?.base_url).toBe("http://x");
-    expect(cfg.models.m?.metered?.api_key).toBe("k");
+    expect(cfg.models.m?.metered?.[0]?.base_url).toBe("http://x");
+    expect(cfg.models.m?.metered?.[0]?.api_key).toBe("k");
   });
 
   it("leaves unresolved ${VAR} as literal", () => {
@@ -66,7 +104,7 @@ models:
       base_url: \${MISSING}
 `;
     const cfg = parseV3Text(yaml, () => undefined);
-    expect(cfg.models.m?.metered?.base_url).toBe("${MISSING}");
+    expect(cfg.models.m?.metered?.[0]?.base_url).toBe("${MISSING}");
   });
 
   it("freezes the returned config (catches accidental mutation)", () => {
@@ -138,6 +176,16 @@ models:
     expect(() => parseV3Text(yaml)).toThrow(/"ghost"/);
   });
 
+  it("rejects bare-non-array subscription (e.g. a string)", () => {
+    const yaml = `
+priority: []
+models:
+  m:
+    subscription: "not-an-object"
+`;
+    expect(() => parseV3Text(yaml)).toThrow(/object or an array/);
+  });
+
   it("collects multiple issues and reports them all in one throw", () => {
     const yaml = `
 priority: [missing1, missing2]
@@ -152,42 +200,8 @@ models:
     } catch (err) {
       expect(err).toBeInstanceOf(V3ConfigError);
       const issues = (err as V3ConfigError).issues;
-      // priority[0], priority[1], models.empty, models.bad-sub.subscription.harness — at least 4
       expect(issues.length).toBeGreaterThanOrEqual(4);
     }
-  });
-});
-
-describe("v0.3 loader — legacy detection", () => {
-  it("throws LegacyConfigError when a top-level services: key is present without models:", () => {
-    const yaml = `
-services:
-  claude_code:
-    type: cli
-    model: opus
-`;
-    expect(() => parseV3Text(yaml)).toThrow(LegacyConfigError);
-    expect(() => parseV3Text(yaml)).toThrow(/migrate/i);
-  });
-
-  it("throws LegacyConfigError when overrides: is present without models:", () => {
-    expect(() => parseV3Text("overrides: {}\n")).toThrow(LegacyConfigError);
-  });
-
-  it("throws LegacyConfigError when endpoints: is present without models:", () => {
-    expect(() => parseV3Text("endpoints: []\n")).toThrow(LegacyConfigError);
-  });
-
-  it("does NOT throw legacy when models: is present alongside legacy keys (mixed config tolerated)", () => {
-    const yaml = `
-priority: [opus]
-services: {}
-models:
-  opus:
-    subscription:
-      harness: claude_code
-`;
-    expect(() => parseV3Text(yaml)).not.toThrow();
   });
 });
 
@@ -205,13 +219,15 @@ http:
 
   it("forces auth.required when bind is non-loopback", () => {
     const yaml = `
-priority: []
-models: {}
+priority: [opus]
+models:
+  opus:
+    subscription: { harness: claude_code }
 http:
   bind: 0.0.0.0
   port: 9000
   auth:
-    required: false  # user tries to disable; loader overrides
+    required: false
 `;
     const cfg = parseV3Text(yaml);
     expect(cfg.http?.auth?.required).toBe(true);
@@ -219,8 +235,10 @@ http:
 
   it("respects auth.required: false when bind is loopback", () => {
     const yaml = `
-priority: []
-models: {}
+priority: [opus]
+models:
+  opus:
+    subscription: { harness: claude_code }
 http:
   bind: 127.0.0.1
   auth:
@@ -232,8 +250,10 @@ http:
 
   it("rejects a non-integer port", () => {
     const yaml = `
-priority: []
-models: {}
+priority: [opus]
+models:
+  opus:
+    subscription: { harness: claude_code }
 http:
   port: not-a-number
 `;

@@ -14,7 +14,8 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { LegacyConfigError, loadConfig, watchConfig, type WhichFn } from "../src/config.js";
+import { loadConfig, watchConfig, type WhichFn } from "../src/config.js";
+import { V3ConfigError } from "../src/v3/types.js";
 
 async function writeTmpYaml(name: string, text: string): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), `harness-router-cfg-test-`));
@@ -38,11 +39,11 @@ models:
 `;
     const p = await writeTmpYaml("v3.yaml", yamlText);
     const cfg = await loadConfig(p, { whichFn: noCliFound });
-    // Service id is synthetic: \`opus__subscription\`. The router
+    // Synthetic service id is `${model}::${routeKey}` — the router
     // consumes this through the adapter; users never see it.
-    expect(Object.keys(cfg.services)).toContain("opus__subscription");
-    expect(cfg.services["opus__subscription"]?.harness).toBe("claude_code");
-    expect(cfg.services["opus__subscription"]?.tier).toBe("subscription");
+    expect(Object.keys(cfg.services)).toContain("opus::claude_code");
+    expect(cfg.services["opus::claude_code"]?.harness).toBe("claude_code");
+    expect(cfg.services["opus::claude_code"]?.tier).toBe("subscription");
     expect(cfg.modelPriority).toEqual(["opus"]);
   });
 
@@ -62,16 +63,38 @@ models:
     try {
       const p = await writeTmpYaml("both.yaml", yamlText);
       const cfg = await loadConfig(p, { whichFn: noCliFound });
-      expect(cfg.services["opus__subscription"]).toBeDefined();
-      expect(cfg.services["opus__metered"]).toBeDefined();
-      expect(cfg.services["opus__metered"]?.apiKey).toBe("sk-test");
-      expect(cfg.services["opus__metered"]?.baseUrl).toBe("https://api.anthropic.com/v1");
+      expect(cfg.services["opus::claude_code"]).toBeDefined();
+      expect(cfg.services["opus::api.anthropic.com"]).toBeDefined();
+      expect(cfg.services["opus::api.anthropic.com"]?.apiKey).toBe("sk-test");
+      expect(cfg.services["opus::api.anthropic.com"]?.baseUrl).toBe("https://api.anthropic.com/v1");
     } finally {
       delete process.env.ANTHROPIC_API_KEY;
     }
   });
 
-  it("expands mixture_default model keys to per-tier service ids", async () => {
+  it("multi-harness subscription emits one service per harness", async () => {
+    const yamlText = `
+priority: [opus]
+models:
+  opus:
+    subscription:
+      - harness: claude_code
+        command: claude
+      - harness: cursor
+        command: agent
+      - harness: opencode
+        command: opencode
+`;
+    const p = await writeTmpYaml("multi.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(Object.keys(cfg.services).sort()).toEqual([
+      "opus::claude_code",
+      "opus::cursor",
+      "opus::opencode",
+    ]);
+  });
+
+  it("expands mixture_default model keys to all per-model service ids", async () => {
     const yamlText = `
 priority: [opus]
 mixture_default: [opus]
@@ -84,34 +107,23 @@ models:
 `;
     const p = await writeTmpYaml("mix.yaml", yamlText);
     const cfg = await loadConfig(p, { whichFn: noCliFound });
-    expect(cfg.mixtureDefault).toEqual(["opus__subscription", "opus__metered"]);
+    expect([...(cfg.mixtureDefault ?? [])].sort()).toEqual([
+      "opus::api.anthropic.com",
+      "opus::claude_code",
+    ]);
   });
 });
 
-describe("loadConfig — legacy detection", () => {
-  it("throws LegacyConfigError when YAML has a top-level `services:` (v0.2 shape)", async () => {
+describe("loadConfig — invalid configs (no migrator)", () => {
+  it("throws V3ConfigError when YAML has no `models:` field", async () => {
     const yamlText = `
 services:
   alpha:
-    enabled: true
     type: cli
-    command: alpha-bin
-    model: opus
-    tier: subscription
 `;
     const p = await writeTmpYaml("legacy.yaml", yamlText);
-    await expect(loadConfig(p, { whichFn: noCliFound })).rejects.toThrow(LegacyConfigError);
-    await expect(loadConfig(p, { whichFn: noCliFound })).rejects.toThrow(/migrate/i);
-  });
-
-  it("throws LegacyConfigError on `overrides:` (v0.2 auto-detect overrides)", async () => {
-    const p = await writeTmpYaml("ov.yaml", "overrides: {}\n");
-    await expect(loadConfig(p, { whichFn: allCliFound })).rejects.toThrow(LegacyConfigError);
-  });
-
-  it("throws LegacyConfigError on `endpoints:` (v0.2 endpoints list)", async () => {
-    const p = await writeTmpYaml("ep.yaml", "endpoints: []\n");
-    await expect(loadConfig(p, { whichFn: noCliFound })).rejects.toThrow(LegacyConfigError);
+    await expect(loadConfig(p, { whichFn: noCliFound })).rejects.toThrow(V3ConfigError);
+    await expect(loadConfig(p, { whichFn: noCliFound })).rejects.toThrow(/models/i);
   });
 });
 
@@ -148,7 +160,7 @@ models:
 `;
     const p = await writeTmpYaml("env.yaml", yamlText);
     const cfg = await loadConfig(p, { whichFn: noCliFound });
-    expect(cfg.services["opus__metered"]?.apiKey).toBe("test-key-xyz");
+    expect(cfg.services["opus::api.anthropic.com"]?.apiKey).toBe("test-key-xyz");
   });
 });
 

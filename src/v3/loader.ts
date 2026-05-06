@@ -6,12 +6,12 @@
  * sees every problem in one shot.
  *
  * Env-var interpolation (`${VAR}`) runs once on the raw YAML string before
- * parsing. Same syntax v0.2 used; same loader semantics.
+ * parsing. Same syntax used by metered route api_keys.
  *
- * Detection of v0.2 configs: when the parsed YAML has a top-level `services`
- * or `overrides` key but no `models` key, we throw a dedicated
- * `LegacyConfigError` so callers (the CLI wrapper, the bin entrypoint) can
- * route the user to `harness-router migrate`.
+ * Greenfield project: there is no migrator. A YAML with no `models:` key
+ * gets a normal V3ConfigError pointing the user at the v0.3 schema; the
+ * wizard (`harness-router onboard`) is the recommended way to get a
+ * working config.
  */
 
 import { promises as fs } from "node:fs";
@@ -29,24 +29,6 @@ import type {
 import { V3ConfigError } from "./types.js";
 
 // ---------------------------------------------------------------------------
-// Errors
-// ---------------------------------------------------------------------------
-
-/**
- * Thrown when a config file looks like v0.2 (top-level `services:` or
- * `overrides:`, no `models:`). Caller should suggest `harness-router migrate`.
- */
-export class LegacyConfigError extends Error {
-  constructor(public readonly path: string) {
-    super(
-      `Config at ${path} looks like a v0.2 file (no top-level \`models:\` key). ` +
-        `Run \`harness-router migrate\` to translate it to v0.3.`,
-    );
-    this.name = "LegacyConfigError";
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -60,33 +42,19 @@ export async function loadV3Config(path: string, opts: LoadV3Opts = {}): Promise
   const env = opts.env ?? ((n) => process.env[n]);
   const interpolated = interpolateEnv(text, env);
   const raw = (yaml.load(interpolated) ?? {}) as Record<string, unknown>;
-
-  if (looksLikeLegacy(raw)) throw new LegacyConfigError(path);
-
   return parseV3(raw);
 }
 
-/**
- * Synchronous parse — useful for tests and the migrator. Mirrors loadV3Config
- * but takes raw text instead of reading from disk.
- */
+/** Synchronous parse — useful for tests. Mirrors loadV3Config but takes raw text. */
 export function parseV3Text(text: string, env?: (name: string) => string | undefined): V3Config {
   const lookup = env ?? ((n: string) => process.env[n]);
   const raw = (yaml.load(interpolateEnv(text, lookup)) ?? {}) as Record<string, unknown>;
-  if (looksLikeLegacy(raw)) {
-    throw new LegacyConfigError("(in-memory)");
-  }
   return parseV3(raw);
 }
 
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
-
-function looksLikeLegacy(raw: Record<string, unknown>): boolean {
-  if (raw.models !== undefined) return false;
-  return raw.services !== undefined || raw.overrides !== undefined || raw.endpoints !== undefined;
-}
 
 function interpolateEnv(text: string, env: (name: string) => string | undefined): string {
   return text.replace(/\$\{([A-Z0-9_]+)\}/g, (whole, name: string) => env(name) ?? whole);
@@ -147,13 +115,16 @@ function parseModelEntry(
   const obj = value as Record<string, unknown>;
   const entry: V3ModelEntry = {};
 
+  // Subscription routes — accept either a single object (shorthand for one
+  // route) or an array of objects (multiple harnesses serving the same
+  // model). Normalises to readonly array regardless.
   if (obj.subscription !== undefined) {
-    const sub = parseSubscription(`${path}.subscription`, obj.subscription, issues);
-    if (sub) entry.subscription = sub;
+    const subs = parseSubscriptionList(`${path}.subscription`, obj.subscription, issues);
+    if (subs.length > 0) entry.subscription = subs;
   }
   if (obj.metered !== undefined) {
-    const met = parseMetered(`${path}.metered`, obj.metered, issues);
-    if (met) entry.metered = met;
+    const meds = parseMeteredList(`${path}.metered`, obj.metered, issues);
+    if (meds.length > 0) entry.metered = meds;
   }
 
   if (!entry.subscription && !entry.metered) {
@@ -163,16 +134,64 @@ function parseModelEntry(
   return entry;
 }
 
-function parseSubscription(
+function parseSubscriptionList(
   path: string,
   value: unknown,
   issues: V3Issue[],
-): V3SubscriptionRoute | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    issues.push({ path, message: "must be an object" });
-    return undefined;
+): V3SubscriptionRoute[] {
+  // Single-object shorthand: { harness: "claude_code" }
+  // Multi-route form:        [{ harness: "claude_code" }, { harness: "cursor" }]
+  // Both normalise to V3SubscriptionRoute[] internally.
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const route = parseSubscription(path, value as Record<string, unknown>, issues);
+    return route ? [route] : [];
   }
-  const obj = value as Record<string, unknown>;
+  if (!Array.isArray(value)) {
+    issues.push({ path, message: "must be an object or an array of objects" });
+    return [];
+  }
+  const list: unknown[] = value;
+  const out: V3SubscriptionRoute[] = [];
+  for (let i = 0; i < list.length; i++) {
+    const item = list[i];
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      issues.push({ path: `${path}[${i}]`, message: "must be an object" });
+      continue;
+    }
+    const route = parseSubscription(`${path}[${i}]`, item as Record<string, unknown>, issues);
+    if (route) out.push(route);
+  }
+  return out;
+}
+
+function parseMeteredList(path: string, value: unknown, issues: V3Issue[]): V3MeteredRoute[] {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const route = parseMetered(path, value as Record<string, unknown>, issues);
+    return route ? [route] : [];
+  }
+  if (!Array.isArray(value)) {
+    issues.push({ path, message: "must be an object or an array of objects" });
+    return [];
+  }
+  const list: unknown[] = value;
+  const out: V3MeteredRoute[] = [];
+  for (let i = 0; i < list.length; i++) {
+    const item = list[i];
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      issues.push({ path: `${path}[${i}]`, message: "must be an object" });
+      continue;
+    }
+    const route = parseMetered(`${path}[${i}]`, item as Record<string, unknown>, issues);
+    if (route) out.push(route);
+  }
+  return out;
+}
+
+function parseSubscription(
+  path: string,
+  obj: Record<string, unknown>,
+  issues: V3Issue[],
+): V3SubscriptionRoute | undefined {
   if (typeof obj.harness !== "string" || obj.harness === "") {
     issues.push({ path: `${path}.harness`, message: "required string (e.g. claude_code)" });
     return undefined;
@@ -181,22 +200,19 @@ function parseSubscription(
   if (typeof obj.cli_model_override === "string") route.cli_model_override = obj.cli_model_override;
   if (typeof obj.command === "string") route.command = obj.command;
   if (typeof obj.enabled === "boolean") route.enabled = obj.enabled;
-  // generic_cli passes through verbatim — the existing GenericCliRecipe parser
-  // is in src/config.ts; v0.3 keeps that shape unchanged. After the narrowing
-  // checks below, the type is `object & {}`, which TS accepts as a structural
-  // match for GenericCliRecipe (all fields optional) — no cast needed.
+  // generic_cli passes through verbatim. After the narrowing checks the type
+  // is `object & {}`, structurally compatible with GenericCliRecipe.
   if (obj.generic_cli && typeof obj.generic_cli === "object" && !Array.isArray(obj.generic_cli)) {
     route.generic_cli = obj.generic_cli;
   }
   return route;
 }
 
-function parseMetered(path: string, value: unknown, issues: V3Issue[]): V3MeteredRoute | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    issues.push({ path, message: "must be an object" });
-    return undefined;
-  }
-  const obj = value as Record<string, unknown>;
+function parseMetered(
+  path: string,
+  obj: Record<string, unknown>,
+  issues: V3Issue[],
+): V3MeteredRoute | undefined {
   if (typeof obj.base_url !== "string" || obj.base_url === "") {
     issues.push({ path: `${path}.base_url`, message: "required string (https URL)" });
     return undefined;

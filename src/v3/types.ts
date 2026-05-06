@@ -69,12 +69,27 @@ export interface V3MeteredRoute {
 }
 
 /**
- * One canonical model and its routes. Either subscription, metered, or
- * both. A model with neither route is invalid — the loader rejects it.
+ * One canonical model and its routes.
+ *
+ * **Multiple harnesses can serve the same model on subscription tier** —
+ * Claude Code, Cursor, opencode and Copilot CLI all accept `claude-opus-4-7`,
+ * for example. The user lists them in priority order and the router picks
+ * the highest-quota usable one per dispatch (with the rest as automatic
+ * fallbacks).
+ *
+ * The same is true for metered: a user might wire up both Anthropic's
+ * direct API and a self-hosted relay that also speaks Claude — different
+ * `base_url`s, same model, both useful as fallbacks.
+ *
+ * Both `subscription` and `metered` are arrays of routes. The YAML loader
+ * accepts a single-route shorthand for the common case (one object instead
+ * of a one-element array) and normalises to array form internally.
+ *
+ * A model with neither route is invalid — the loader rejects it.
  */
 export interface V3ModelEntry {
-  subscription?: V3SubscriptionRoute;
-  metered?: V3MeteredRoute;
+  subscription?: readonly V3SubscriptionRoute[];
+  metered?: readonly V3MeteredRoute[];
 }
 
 /**

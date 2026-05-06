@@ -49,7 +49,8 @@ async function writeConfig(dir: string, body: string): Promise<string> {
 
 function minimalConfig(): string {
   // v0.3 shape — one model with a subscription route. The synthetic service
-  // id used by the router/breaker is `alpha__subscription` (model + tier).
+  // id used by the router/breaker is `${model}::${harness}` per the v0.3
+  // adapter — for this fixture, `alpha::claude_code`.
   return [
     "priority: [alpha]",
     "models:",
@@ -61,8 +62,8 @@ function minimalConfig(): string {
 }
 
 /** Synthetic service id matching what v3ToRouterConfig produces. */
-const ALPHA_SVC = "alpha__subscription";
-const BETA_SVC = "beta__subscription";
+const ALPHA_SVC = "alpha::claude_code";
+const BETA_SVC = "beta::codex";
 
 async function bumpMtime(file: string, body: string): Promise<void> {
   // Wait long enough for mtime to actually advance on coarse-grained

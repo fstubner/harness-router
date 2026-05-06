@@ -30,7 +30,6 @@ import {
   type McpServerEntry,
 } from "./install/targets.js";
 import { runWizard } from "./onboarding/wizard.js";
-import { cmdMigrate } from "./cli/migrate.js";
 import { cmdAuth } from "./cli/auth.js";
 
 // ---------------------------------------------------------------------------
@@ -408,7 +407,6 @@ function printUsage(): void {
       "  harness-router onboard                  Interactive first-run setup: detect CLIs, pick models",
       "                                            + priority, choose MCP hosts to wire up.",
       "  harness-router onboard --skip-install   Just write the config; don't install into MCP hosts.",
-      "  harness-router migrate                  Translate a v0.2 config.yaml to v0.3 (writes .v2.bak backup).",
       "  harness-router doctor                   Health check across installed AI CLIs.",
       "  harness-router doctor --install         Try `npm install -g` for any missing/upgradable harness.",
       "  harness-router doctor --harness <id>    Limit to one harness.",
@@ -451,7 +449,6 @@ export async function main(argv: string[]): Promise<number> {
       uninstall: { type: "boolean" },
       name: { type: "string" },
       "skip-install": { type: "boolean" },
-      "no-backup": { type: "boolean" },
       bind: { type: "string" },
       "require-auth": { type: "boolean" },
     },
@@ -534,12 +531,6 @@ export async function main(argv: string[]): Promise<number> {
       if (typeof values.config === "string") wizardOpts.configPath = values.config;
       if (values["skip-install"] === true) wizardOpts.skipInstall = true;
       return runWizard(wizardOpts);
-    }
-    case "migrate": {
-      const migrateOpts: { configPath?: string; noBackup?: boolean } = {};
-      if (typeof values.config === "string") migrateOpts.configPath = values.config;
-      if (values["no-backup"] === true) migrateOpts.noBackup = true;
-      return cmdMigrate(migrateOpts);
     }
     case "auth": {
       const action = rest[0];

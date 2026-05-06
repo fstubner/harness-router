@@ -2,8 +2,7 @@
  * Tests for the v0.3 wizard's pure parts.
  *
  * The interactive prompts can't be unit-tested without a TTY, but
- * `buildV3WizardConfig` (the model-keyed config builder) is a pure
- * function — same testability story as v0.2's buildWizardConfig.
+ * `buildV3WizardConfig` (the model-keyed config builder) is a pure function.
  */
 
 import { describe, expect, it } from "vitest";
@@ -25,42 +24,106 @@ const harnessCommand = (id: HarnessId): string =>
     copilot: "copilot",
   })[id] ?? id;
 
-describe("buildV3WizardConfig", () => {
-  it("builds a model-keyed entry with subscription route only", () => {
+describe("buildV3WizardConfig — single harness", () => {
+  it("builds a model-keyed entry with one subscription harness", () => {
     const cfg = buildV3WizardConfig({
       priority: ["opus"],
-      choices: [{ key: "opus", subscriptionHarness: "claude_code" }],
+      choices: [{ key: "opus", subscriptionHarnesses: ["claude_code"] }],
       harnessCommand,
       envFn: () => undefined,
     });
     expect(cfg.priority).toEqual(["opus"]);
-    expect(cfg.models.opus?.subscription?.harness).toBe("claude_code");
-    expect(cfg.models.opus?.subscription?.command).toBe("claude");
+    expect(cfg.models.opus?.subscription).toHaveLength(1);
+    expect(cfg.models.opus?.subscription?.[0]?.harness).toBe("claude_code");
+    expect(cfg.models.opus?.subscription?.[0]?.command).toBe("claude");
     expect(cfg.models.opus?.metered).toBeUndefined();
   });
 
+  it("does not include subscription when subscriptionHarnesses is empty/undefined", () => {
+    // Use a model name that triggers the Anthropic provider matcher
+    // (requires "claude" substring) so addMetered actually produces a route.
+    const cfg = buildV3WizardConfig({
+      priority: ["claude-opus-4-7"],
+      choices: [{ key: "claude-opus-4-7", addMetered: true }],
+      harnessCommand,
+      envFn: (n) => (n === "ANTHROPIC_API_KEY" ? "sk" : undefined),
+    });
+    expect(cfg.models["claude-opus-4-7"]?.subscription).toBeUndefined();
+    expect(cfg.models["claude-opus-4-7"]?.metered).toHaveLength(1);
+  });
+});
+
+describe("buildV3WizardConfig — multi-harness subscription", () => {
+  it("emits N subscription routes for N harnesses, in order", () => {
+    const cfg = buildV3WizardConfig({
+      priority: ["opus"],
+      choices: [
+        {
+          key: "opus",
+          subscriptionHarnesses: ["claude_code", "cursor", "opencode"],
+        },
+      ],
+      harnessCommand,
+      envFn: () => undefined,
+    });
+    expect(cfg.models.opus?.subscription).toHaveLength(3);
+    expect(cfg.models.opus?.subscription?.map((r) => r.harness)).toEqual([
+      "claude_code",
+      "cursor",
+      "opencode",
+    ]);
+    expect(cfg.models.opus?.subscription?.map((r) => r.command)).toEqual([
+      "claude",
+      "agent",
+      "opencode",
+    ]);
+  });
+
+  it("preserves harness order so router walks priority within tier", () => {
+    // Order matters — the router uses array index as a quota-tiebreak when
+    // multiple routes have equal headroom. Putting claude_code first means
+    // it wins ties, e.g. when both Claude Pro and Cursor Pro have full quota.
+    const cfg = buildV3WizardConfig({
+      priority: ["opus"],
+      choices: [{ key: "opus", subscriptionHarnesses: ["cursor", "claude_code"] }],
+      harnessCommand,
+      envFn: () => undefined,
+    });
+    expect(cfg.models.opus?.subscription?.[0]?.harness).toBe("cursor");
+    expect(cfg.models.opus?.subscription?.[1]?.harness).toBe("claude_code");
+  });
+});
+
+describe("buildV3WizardConfig — metered fallback", () => {
   it("adds a metered route when addMetered is true and the env var is set", () => {
     const cfg = buildV3WizardConfig({
       priority: ["claude-opus-4-7"],
-      choices: [{ key: "claude-opus-4-7", subscriptionHarness: "claude_code", addMetered: true }],
+      choices: [
+        {
+          key: "claude-opus-4-7",
+          subscriptionHarnesses: ["claude_code"],
+          addMetered: true,
+        },
+      ],
       harnessCommand,
       envFn: (n) => (n === "ANTHROPIC_API_KEY" ? "sk-test" : undefined),
     });
-    expect(cfg.models["claude-opus-4-7"]?.metered).toBeDefined();
-    expect(cfg.models["claude-opus-4-7"]?.metered?.base_url).toBe("https://api.anthropic.com/v1");
+    expect(cfg.models["claude-opus-4-7"]?.metered).toHaveLength(1);
+    expect(cfg.models["claude-opus-4-7"]?.metered?.[0]?.base_url).toBe(
+      "https://api.anthropic.com/v1",
+    );
     // Never embeds the actual key value — uses the ${VAR} placeholder.
-    expect(cfg.models["claude-opus-4-7"]?.metered?.api_key).toBe("${ANTHROPIC_API_KEY}");
+    expect(cfg.models["claude-opus-4-7"]?.metered?.[0]?.api_key).toBe("${ANTHROPIC_API_KEY}");
   });
 
   it("does not add metered when addMetered is true but no env var is set", () => {
     const cfg = buildV3WizardConfig({
       priority: ["claude-opus-4-7"],
-      choices: [{ key: "claude-opus-4-7", addMetered: true }], // no subscription either
+      choices: [{ key: "claude-opus-4-7", addMetered: true }],
       harnessCommand,
       envFn: () => undefined,
     });
-    // Entry with neither route should be skipped entirely — no orphan model
-    // entry appears in the output.
+    // Entry with neither route should be skipped — no orphan model entry.
     expect(cfg.models["claude-opus-4-7"]).toBeUndefined();
     expect(cfg.priority).toEqual([]);
   });
@@ -79,16 +142,18 @@ describe("buildV3WizardConfig", () => {
           ? "sk-test"
           : undefined,
     });
-    expect(cfg.models["claude-opus-4-7"]?.metered?.base_url).toMatch(/anthropic/);
-    expect(cfg.models["gpt-5.4"]?.metered?.base_url).toMatch(/openai/);
-    expect(cfg.models["gemini-2.5-pro"]?.metered?.base_url).toMatch(/googleapis/);
+    expect(cfg.models["claude-opus-4-7"]?.metered?.[0]?.base_url).toMatch(/anthropic/);
+    expect(cfg.models["gpt-5.4"]?.metered?.[0]?.base_url).toMatch(/openai/);
+    expect(cfg.models["gemini-2.5-pro"]?.metered?.[0]?.base_url).toMatch(/googleapis/);
   });
+});
 
+describe("buildV3WizardConfig — priority + mixture filtering", () => {
   it("filters priority to entries that survived (no orphan keys)", () => {
     const cfg = buildV3WizardConfig({
       priority: ["alive", "dead"],
       choices: [
-        { key: "alive", subscriptionHarness: "claude_code" },
+        { key: "alive", subscriptionHarnesses: ["claude_code"] },
         { key: "dead" }, // no harness, no metered → dropped
       ],
       harnessCommand,
@@ -103,8 +168,8 @@ describe("buildV3WizardConfig", () => {
     const cfg = buildV3WizardConfig({
       priority: ["a", "b"],
       choices: [
-        { key: "a", subscriptionHarness: "claude_code" },
-        { key: "b", subscriptionHarness: "codex" },
+        { key: "a", subscriptionHarnesses: ["claude_code"] },
+        { key: "b", subscriptionHarnesses: ["codex"] },
       ],
       mixtureDefault: ["a", "b", "a"], // dupe
       harnessCommand,
@@ -116,7 +181,7 @@ describe("buildV3WizardConfig", () => {
   it("filters mixture_default to keys that exist in models", () => {
     const cfg = buildV3WizardConfig({
       priority: ["a"],
-      choices: [{ key: "a", subscriptionHarness: "claude_code" }],
+      choices: [{ key: "a", subscriptionHarnesses: ["claude_code"] }],
       mixtureDefault: ["a", "ghost"],
       harnessCommand,
       envFn: () => undefined,
@@ -127,7 +192,7 @@ describe("buildV3WizardConfig", () => {
   it("omits mixture_default when no surviving entries", () => {
     const cfg = buildV3WizardConfig({
       priority: ["a"],
-      choices: [{ key: "a", subscriptionHarness: "claude_code" }],
+      choices: [{ key: "a", subscriptionHarnesses: ["claude_code"] }],
       mixtureDefault: ["ghost"],
       harnessCommand,
       envFn: () => undefined,
@@ -135,11 +200,11 @@ describe("buildV3WizardConfig", () => {
     expect(cfg.mixture_default).toBeUndefined();
   });
 
-  it("handles a model with both subscription harness and metered fallback", () => {
+  it("handles a model with multiple subscription harnesses + metered fallback", () => {
     const choices: ModelChoice[] = [
       {
         key: "claude-opus-4-7",
-        subscriptionHarness: "claude_code",
+        subscriptionHarnesses: ["claude_code", "cursor"],
         addMetered: true,
       },
     ];
@@ -149,8 +214,8 @@ describe("buildV3WizardConfig", () => {
       harnessCommand,
       envFn: (n) => (n === "ANTHROPIC_API_KEY" ? "sk-test" : undefined),
     });
-    expect(cfg.models["claude-opus-4-7"]?.subscription).toBeDefined();
-    expect(cfg.models["claude-opus-4-7"]?.metered).toBeDefined();
+    expect(cfg.models["claude-opus-4-7"]?.subscription).toHaveLength(2);
+    expect(cfg.models["claude-opus-4-7"]?.metered).toHaveLength(1);
   });
 });
 
@@ -159,8 +224,8 @@ describe("renderV3WizardYaml", () => {
     const cfg = buildV3WizardConfig({
       priority: ["opus", "gpt-5.4"],
       choices: [
-        { key: "opus", subscriptionHarness: "claude_code" },
-        { key: "gpt-5.4", subscriptionHarness: "cursor" },
+        { key: "opus", subscriptionHarnesses: ["claude_code", "cursor"] },
+        { key: "gpt-5.4", subscriptionHarnesses: ["cursor"] },
       ],
       mixtureDefault: ["opus", "gpt-5.4"],
       harnessCommand,
@@ -174,6 +239,7 @@ describe("renderV3WizardYaml", () => {
     expect(out).toContain("opus:");
     expect(out).toContain("subscription:");
     expect(out).toContain("harness: claude_code");
+    expect(out).toContain("harness: cursor");
     expect(out).toContain("mixture_default:");
   });
 

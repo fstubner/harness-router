@@ -35,7 +35,7 @@ import {
   type InstallTarget,
   type McpServerEntry,
 } from "../install/targets.js";
-import { renderV3Yaml } from "../v3/migrate.js";
+import { renderV3Yaml } from "../v3/render.js";
 import {
   fetchOpenRouterCatalogVerbose,
   type CatalogModel,
@@ -98,9 +98,15 @@ function findProviderForModel(
 export interface ModelChoice {
   /** Canonical model key (becomes `models.<key>` in YAML). */
   key: string;
-  /** Detected harness id that should serve this model on subscription tier. */
-  subscriptionHarness?: HarnessId;
-  /** When true, also generate an openai_compatible metered route. */
+  /**
+   * Detected harness ids that should serve this model on subscription tier.
+   * Multiple harnesses serving the same model is the common case — Claude
+   * Code, Cursor, opencode and Copilot CLI all accept `claude-opus-4-7`,
+   * for example. The wizard collects them via a checkbox and the router
+   * picks the highest-quota usable one per dispatch.
+   */
+  subscriptionHarnesses?: readonly HarnessId[];
+  /** When true, generate an openai_compatible metered route. */
   addMetered?: boolean;
 }
 
@@ -129,13 +135,15 @@ export function buildV3WizardConfig(opts: BuildOpts): V3Config {
 
   for (const choice of opts.choices) {
     const entry: V3ModelEntry = {};
-    if (choice.subscriptionHarness) {
-      const sub: V3SubscriptionRoute = {
-        harness: choice.subscriptionHarness,
-        command: opts.harnessCommand(choice.subscriptionHarness),
-      };
-      entry.subscription = sub;
+    const subs: V3SubscriptionRoute[] = [];
+    for (const harness of choice.subscriptionHarnesses ?? []) {
+      subs.push({
+        harness,
+        command: opts.harnessCommand(harness),
+      });
     }
+    if (subs.length > 0) entry.subscription = subs;
+
     if (choice.addMetered) {
       const provider = findProviderForModel(choice.key, envFn);
       if (provider) {
@@ -143,7 +151,7 @@ export function buildV3WizardConfig(opts: BuildOpts): V3Config {
           base_url: provider.baseUrl,
           api_key: `\${${provider.envVar}}`,
         };
-        entry.metered = metered;
+        entry.metered = [metered];
       }
     }
     if (!entry.subscription && !entry.metered) continue; // skip invalid
@@ -237,23 +245,26 @@ export async function runWizard(opts: RunWizardOpts = {}): Promise<number> {
   // ordered re-pick via the rendered list.
   const priority = await orderModels(typedKeys);
 
-  // ---- Step 4: subscription harness per model -----------------------------
+  // ---- Step 4: subscription harnesses per model ----------------------------
+  // Multi-select: a model can be served by N harnesses on subscription
+  // (e.g. claude-opus-4-7 is accepted by claude_code, cursor, opencode,
+  // copilot). The router picks the highest-quota usable one per dispatch
+  // and uses the rest as automatic fallbacks. Skip the prompt entirely
+  // when only one harness was detected (auto-include it).
   const detectedIds = detected.map((r) => r.harness);
   const choices: ModelChoice[] = [];
   for (const key of priority) {
-    const harness = await select<string>({
-      message: `Which harness serves "${key}" on subscription tier? (choose "none" to skip)`,
-      choices: [
-        ...detectedIds.map((id) => ({ name: id, value: id })),
-        new Separator("—"),
-        { name: "(none — metered only or skip)", value: "__none__" },
-      ],
-      default: detectedIds[0] ?? "__none__",
-    });
+    let harnesses: HarnessId[] = [];
+    if (detectedIds.length === 1) {
+      harnesses = [...detectedIds];
+    } else if (detectedIds.length > 1) {
+      harnesses = await checkbox<HarnessId>({
+        message: `Which harnesses serve "${key}" on subscription tier? (skip = metered only)`,
+        choices: detectedIds.map((id) => ({ name: id, value: id, checked: false })),
+      });
+    }
     const choice: ModelChoice = { key };
-    // HarnessId is a string alias; the sentinel guard above narrows away
-    // the "__none__" branch so the assignment is type-safe directly.
-    if (harness !== "__none__") choice.subscriptionHarness = harness;
+    if (harnesses.length > 0) choice.subscriptionHarnesses = harnesses;
     choices.push(choice);
   }
 
@@ -270,7 +281,7 @@ export async function runWizard(opts: RunWizardOpts = {}): Promise<number> {
 
   // ---- Step 6: mixture default --------------------------------------------
   const validForMixture = choices
-    .filter((c) => c.subscriptionHarness || c.addMetered)
+    .filter((c) => (c.subscriptionHarnesses && c.subscriptionHarnesses.length > 0) || c.addMetered)
     .map((c) => c.key);
   let mixtureDefault: string[] = [];
   if (validForMixture.length > 1) {

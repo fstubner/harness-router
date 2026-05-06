@@ -3,14 +3,23 @@
  *
  * The existing router / dispatchers / quota layer is built around the v0.2
  * `RouterConfig` shape (services keyed by name, tier as a field). v0.3
- * configs are model-keyed. This adapter generates a v0.2-shaped view from
- * a V3Config so the existing runtime can keep working unchanged while the
- * config schema is the new shape on disk.
+ * configs are model-keyed with arrays of routes per (model, tier). This
+ * adapter generates a v0.2-shaped view from a V3Config so the existing
+ * runtime can keep working unchanged while the config schema is the new
+ * shape on disk.
  *
- * Synthetic service ids are produced as `${model}__${tier}` (double
- * underscore separator to avoid collision with model names that already
- * contain `_`). They never appear in user-facing config — they exist only
- * as internal handles the dispatcher factory and circuit breakers key on.
+ * Synthetic service ids follow `${model}::${routeKey}`:
+ *
+ *   opus::claude_code               — opus served by claude_code subscription
+ *   opus::cursor                    — opus served by cursor subscription
+ *   opus::api.anthropic.com         — opus served by Anthropic API metered
+ *   opus::api.openai.com            — opus served by OpenAI metered
+ *
+ * They never appear in user-facing config — they're internal handles the
+ * dispatcher factory and circuit breakers key on. Choosing a debuggable
+ * format (rather than positional indices like `opus::sub::0`) means logs,
+ * dashboards, and breaker error messages tell you which underlying CLI or
+ * provider tripped without an extra lookup.
  *
  * Pure function. No I/O.
  */
@@ -18,42 +27,68 @@
 import type { RouterConfig, ServiceConfig } from "../types.js";
 import type { V3Config, V3MeteredRoute, V3ModelEntry, V3SubscriptionRoute } from "./types.js";
 
-const SEPARATOR = "__";
+const SEPARATOR = "::";
 
 /** Build the synthetic service id used internally by the router. */
-export function syntheticServiceId(model: string, tier: "subscription" | "metered"): string {
-  return `${model}${SEPARATOR}${tier}`;
+export function syntheticServiceId(model: string, routeKey: string): string {
+  return `${model}${SEPARATOR}${routeKey}`;
 }
 
 /**
- * Reverse of {@link syntheticServiceId}. Returns null if the id doesn't
- * follow the synthetic convention.
+ * Disambiguator for a metered route — extract the hostname from the
+ * `base_url`. Falls back to a generic "metered" tag when the URL doesn't
+ * parse (loader's validation should prevent that, but we'd rather emit
+ * something usable than throw mid-adapter).
  */
-export function parseSyntheticServiceId(
-  id: string,
-): { model: string; tier: "subscription" | "metered" } | null {
-  const idx = id.lastIndexOf(SEPARATOR);
-  if (idx < 0) return null;
-  const tier = id.slice(idx + SEPARATOR.length);
-  if (tier !== "subscription" && tier !== "metered") return null;
-  return { model: id.slice(0, idx), tier };
+function meteredRouteKey(route: V3MeteredRoute): string {
+  try {
+    return new URL(route.base_url).host;
+  } catch {
+    return "metered";
+  }
+}
+
+/**
+ * Resolve collisions when two routes for the same (model, tier) would
+ * produce the same disambiguator. Rare — typically only happens when a
+ * user lists the same harness twice for one model, or two metered routes
+ * with the same hostname. We append `#${index}` to break the tie.
+ */
+function ensureUnique(seen: Set<string>, candidate: string): string {
+  if (!seen.has(candidate)) {
+    seen.add(candidate);
+    return candidate;
+  }
+  let i = 1;
+  while (seen.has(`${candidate}#${i}`)) i++;
+  const out = `${candidate}#${i}`;
+  seen.add(out);
+  return out;
 }
 
 export function v3ToRouterConfig(v3: V3Config): RouterConfig {
   const services: Record<string, ServiceConfig> = {};
   const disabled: string[] = [];
+  // Keep per-model service ids so mixture_default expansion below can
+  // reference exactly the ones we emitted.
+  const idsByModel: Map<string, string[]> = new Map();
 
   for (const [model, entry] of Object.entries(v3.models)) {
-    if (entry.subscription) {
-      const { id, svc, isDisabled } = subscriptionToService(model, entry.subscription);
-      services[id] = svc;
-      if (isDisabled) disabled.push(id);
+    const seen = new Set<string>();
+    const ids: string[] = [];
+    for (const route of entry.subscription ?? []) {
+      const id = ensureUnique(seen, syntheticServiceId(model, route.harness));
+      services[id] = subscriptionToService(id, model, route);
+      if (route.enabled === false) disabled.push(id);
+      ids.push(id);
     }
-    if (entry.metered) {
-      const { id, svc, isDisabled } = meteredToService(model, entry.metered);
-      services[id] = svc;
-      if (isDisabled) disabled.push(id);
+    for (const route of entry.metered ?? []) {
+      const id = ensureUnique(seen, syntheticServiceId(model, meteredRouteKey(route)));
+      services[id] = meteredToService(id, model, route);
+      if (route.enabled === false) disabled.push(id);
+      ids.push(id);
     }
+    if (ids.length > 0) idsByModel.set(model, ids);
   }
 
   const cfg: RouterConfig = {
@@ -62,14 +97,13 @@ export function v3ToRouterConfig(v3: V3Config): RouterConfig {
   };
   if (disabled.length > 0) cfg.disabled = disabled;
   if (v3.mixture_default && v3.mixture_default.length > 0) {
-    // v0.2's mixtureDefault is service-name-keyed. v0.3's is model-keyed.
-    // Translate by emitting both tiers' synthetic ids per chosen model.
+    // Each model key in mixture_default expands to ALL of its synthetic
+    // service ids — both subscription and metered tiers, all routes per
+    // tier. The router then filters to whichever are usable at dispatch
+    // time.
     const expanded: string[] = [];
     for (const model of v3.mixture_default) {
-      const entry = v3.models[model];
-      if (!entry) continue;
-      if (entry.subscription) expanded.push(syntheticServiceId(model, "subscription"));
-      if (entry.metered) expanded.push(syntheticServiceId(model, "metered"));
+      for (const id of idsByModel.get(model) ?? []) expanded.push(id);
     }
     if (expanded.length > 0) cfg.mixtureDefault = expanded;
   }
@@ -77,10 +111,10 @@ export function v3ToRouterConfig(v3: V3Config): RouterConfig {
 }
 
 function subscriptionToService(
+  id: string,
   model: string,
   route: V3SubscriptionRoute,
-): { id: string; svc: ServiceConfig; isDisabled: boolean } {
-  const id = syntheticServiceId(model, "subscription");
+): ServiceConfig {
   const svc: ServiceConfig = {
     name: id,
     enabled: route.enabled !== false,
@@ -92,14 +126,10 @@ function subscriptionToService(
   if (route.command) svc.command = route.command;
   if (route.cli_model_override) svc.cliModel = route.cli_model_override;
   if (route.generic_cli) svc.genericCli = route.generic_cli;
-  return { id, svc, isDisabled: route.enabled === false };
+  return svc;
 }
 
-function meteredToService(
-  model: string,
-  route: V3MeteredRoute,
-): { id: string; svc: ServiceConfig; isDisabled: boolean } {
-  const id = syntheticServiceId(model, "metered");
+function meteredToService(id: string, model: string, route: V3MeteredRoute): ServiceConfig {
   const svc: ServiceConfig = {
     name: id,
     enabled: route.enabled !== false,
@@ -110,7 +140,7 @@ function meteredToService(
   };
   if (route.api_key) svc.apiKey = route.api_key;
   if (route.cli_model_override) svc.cliModel = route.cli_model_override;
-  return { id, svc, isDisabled: route.enabled === false };
+  return svc;
 }
 
 // Re-exports for the v3 module index to surface a single import point.
