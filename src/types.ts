@@ -1,8 +1,38 @@
 /**
- * Core types for harness-router.
+ * Core runtime types for harness-router.
  *
  * Cross-cutting types used by dispatchers, the router, the quota tracker,
  * and the MCP surface.
+ *
+ * **Two-layer architecture (deliberate)**
+ *
+ * The codebase has two config-related types that are distinct on purpose:
+ *
+ *   - `Config` (in src/config/types.ts) — the on-disk YAML schema. What
+ *     users write, hand-edit, and version-control. Model-keyed:
+ *     `models.<key>.subscription[]` / `metered[]` arrays. The wizard
+ *     emits this; the parser validates this.
+ *
+ *   - `RouterConfig` (here) — the runtime view consumed by Router. Flat
+ *     services-keyed map produced by the adapter
+ *     (src/config/adapter.ts). Synthetic service ids of the form
+ *     `${model}::${routeKey}` are derived once at config-load time.
+ *
+ * Why both? They serve different roles:
+ *
+ *   - The on-disk shape is for humans (model-first, terse, no derived
+ *     fields).
+ *   - The runtime shape is for the router (flat lookup, pre-computed
+ *     synthetic ids that the quota cache and circuit breakers key on,
+ *     pre-expanded mixture-default lists).
+ *
+ * The translation runs once per config load (or hot-reload) — not per
+ * dispatch. The synthetic-id format is centralised in
+ * src/config/route-id.ts. Future cleanup could make Router consume
+ * `Config` directly and derive route ids on construction; deliberately
+ * deferred because the current adapter is small (~130 LOC) and the
+ * tradeoff isn't a clear win — the runtime would still need the
+ * id-derivation logic, just inlined.
  */
 
 export type ThinkingLevel = "low" | "medium" | "high";

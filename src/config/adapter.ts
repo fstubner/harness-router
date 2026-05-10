@@ -24,45 +24,10 @@
 
 import type { RouterConfig, ServiceConfig } from "../types.js";
 import type { Config, MeteredRoute, SubscriptionRoute } from "./types.js";
+import { ensureUniqueRouteId, meteredRouteKey, syntheticServiceId } from "./route-id.js";
 
-const SEPARATOR = "::";
-
-/** Build the synthetic service id used internally by the router. */
-export function syntheticServiceId(model: string, routeKey: string): string {
-  return `${model}${SEPARATOR}${routeKey}`;
-}
-
-/**
- * Disambiguator for a metered route — extract the hostname (with port, if
- * present) from the `base_url`. Falls back to a generic "metered" tag when
- * the URL doesn't parse (parser validation should prevent that, but we'd
- * rather emit something usable than throw mid-adapter).
- */
-function meteredRouteKey(route: MeteredRoute): string {
-  try {
-    return new URL(route.base_url).host;
-  } catch {
-    return "metered";
-  }
-}
-
-/**
- * Resolve collisions when two routes for the same (model, tier) would
- * produce the same disambiguator. Rare — typically only happens when a
- * user lists the same harness twice for one model, or two metered routes
- * with the same hostname. We append `#${index}` to break the tie.
- */
-function ensureUnique(seen: Set<string>, candidate: string): string {
-  if (!seen.has(candidate)) {
-    seen.add(candidate);
-    return candidate;
-  }
-  let i = 1;
-  while (seen.has(`${candidate}#${i}`)) i++;
-  const out = `${candidate}#${i}`;
-  seen.add(out);
-  return out;
-}
+// Re-export so callers that imported from adapter.ts continue to work.
+export { syntheticServiceId };
 
 export function toRouterConfig(cfg: Config): RouterConfig {
   const services: Record<string, ServiceConfig> = {};
@@ -75,13 +40,13 @@ export function toRouterConfig(cfg: Config): RouterConfig {
     const seen = new Set<string>();
     const ids: string[] = [];
     for (const route of entry.subscription ?? []) {
-      const id = ensureUnique(seen, syntheticServiceId(model, route.harness));
+      const id = ensureUniqueRouteId(seen, syntheticServiceId(model, route.harness));
       services[id] = subscriptionToService(id, model, route);
       if (route.enabled === false) disabled.push(id);
       ids.push(id);
     }
     for (const route of entry.metered ?? []) {
-      const id = ensureUnique(seen, syntheticServiceId(model, meteredRouteKey(route)));
+      const id = ensureUniqueRouteId(seen, syntheticServiceId(model, meteredRouteKey(route)));
       services[id] = meteredToService(id, model, route);
       if (route.enabled === false) disabled.push(id);
       ids.push(id);
