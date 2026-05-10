@@ -14,75 +14,21 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { registerTools, TOOL_NAMES } from "../../src/mcp/tools.js";
 import { registerResources } from "../../src/mcp/resources.js";
 import { RuntimeHolder, type RuntimeState } from "../../src/mcp/config-hot-reload.js";
-import { Router } from "../../src/router.js";
-import { QuotaCache } from "../../src/quota.js";
-import { QuotaStore } from "../../src/state/quota-store.js";
 import type { Dispatcher } from "../../src/dispatchers/base.js";
-import type {
-  DispatchResult,
-  DispatcherEvent,
-  QuotaInfo,
-  RouterConfig,
-  ServiceConfig,
-} from "../../src/types.js";
-
-class StubDispatcher implements Dispatcher {
-  readonly id: string;
-  constructor(
-    id: string,
-    private readonly reply: string,
-  ) {
-    this.id = id;
-  }
-  async dispatch(): Promise<DispatchResult> {
-    return { output: this.reply, service: this.id, success: true };
-  }
-  async checkQuota(): Promise<QuotaInfo> {
-    return { service: this.id, source: "unknown" };
-  }
-  async *stream(): AsyncIterable<DispatcherEvent> {
-    yield {
-      type: "completion",
-      result: { output: this.reply, service: this.id, success: true },
-    };
-  }
-  isAvailable(): boolean {
-    return true;
-  }
-}
-
-function makeSvc(name: string, harness: string, model: string): ServiceConfig {
-  return {
-    name,
-    enabled: true,
-    type: "cli",
-    harness,
-    command: name,
-    model,
-    tier: "subscription",
-    maxOutputTokens: 64_000,
-    maxInputTokens: 1_000_000,
-  };
-}
+import { FakeDispatcher, buildState as buildStateRaw, makeService } from "../_fixtures/runtime.js";
 
 function buildState(): RuntimeState {
+  // Two services with different (harness, model) combos so route-walk
+  // tests can pick deterministically by priority.
   const services = {
-    a: makeSvc("a", "claude_code", "claude-opus-4.7"),
-    b: makeSvc("b", "codex", "gpt-5.4"),
+    a: makeService("a", { harness: "claude_code", model: "claude-opus-4.7" }),
+    b: makeService("b", { harness: "codex", model: "gpt-5.4" }),
   };
   const dispatchers: Record<string, Dispatcher> = {
-    a: new StubDispatcher("a", "answer-from-a"),
-    b: new StubDispatcher("b", "answer-from-b"),
+    a: new FakeDispatcher("a", { output: "answer-from-a", service: "a", success: true }),
+    b: new FakeDispatcher("b", { output: "answer-from-b", service: "b", success: true }),
   };
-  const config: RouterConfig = {
-    services,
-    modelPriority: ["claude-opus-4.7", "gpt-5.4"],
-  };
-  const quota = new QuotaCache(dispatchers, {
-    store: new QuotaStore({ path: ":memory:", skipMkdir: true }),
-  });
-  const router = new Router(config, quota, dispatchers);
-  return { config, dispatchers, quota, router, mtimeMs: 0 };
+  return buildStateRaw(services, dispatchers, ["claude-opus-4.7", "gpt-5.4"]);
 }
 
 async function startLinked(): Promise<{

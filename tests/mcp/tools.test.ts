@@ -9,83 +9,8 @@
 import { describe, expect, it } from "vitest";
 
 import { invokeTool, TOOL_NAMES, handleDashboard, handleQuotaStatus } from "../../src/mcp/tools.js";
-import { RuntimeHolder, type RuntimeState } from "../../src/mcp/config-hot-reload.js";
-import { Router } from "../../src/router.js";
-import { QuotaCache } from "../../src/quota.js";
-import { QuotaStore } from "../../src/state/quota-store.js";
 import type { Dispatcher } from "../../src/dispatchers/base.js";
-import type {
-  DispatchResult,
-  DispatcherEvent,
-  QuotaInfo,
-  RouterConfig,
-  ServiceConfig,
-} from "../../src/types.js";
-
-// ---------------------------------------------------------------------------
-// Fakes
-// ---------------------------------------------------------------------------
-
-class FakeDispatcher implements Dispatcher {
-  readonly id: string;
-  constructor(
-    id: string,
-    private readonly response: DispatchResult = {
-      output: "hello",
-      service: id,
-      success: true,
-    },
-    private readonly available = true,
-  ) {
-    this.id = id;
-  }
-  async dispatch(): Promise<DispatchResult> {
-    return this.response;
-  }
-  async checkQuota(): Promise<QuotaInfo> {
-    return { service: this.id, source: "unknown" };
-  }
-  async *stream(): AsyncIterable<DispatcherEvent> {
-    yield { type: "completion", result: this.response };
-  }
-  isAvailable(): boolean {
-    return this.available;
-  }
-}
-
-function makeService(name: string, over: Partial<ServiceConfig> = {}): ServiceConfig {
-  return {
-    name,
-    enabled: true,
-    type: "cli",
-    harness: name,
-    command: name,
-    model: `${name}-model`,
-    tier: "subscription",
-    maxOutputTokens: 64_000,
-    maxInputTokens: 1_000_000,
-    ...over,
-  };
-}
-
-function buildHolder(
-  services: Record<string, ServiceConfig>,
-  dispatchers: Record<string, Dispatcher>,
-  modelPriority?: readonly string[],
-): RuntimeHolder {
-  const priority =
-    modelPriority ??
-    Object.values(services)
-      .map((s) => s.model ?? "")
-      .filter(Boolean);
-  const config: RouterConfig = { services, modelPriority: priority };
-  const quota = new QuotaCache(dispatchers, {
-    store: new QuotaStore({ path: ":memory:", skipMkdir: true }),
-  });
-  const router = new Router(config, quota, dispatchers);
-  const state: RuntimeState = { config, dispatchers, quota, router, mtimeMs: 0 };
-  return new RuntimeHolder(state);
-}
+import { FakeDispatcher, buildHolder, makeService } from "../_fixtures/runtime.js";
 
 // Discriminated-union helpers for the new CodeResult shape.
 type SingleData = {
