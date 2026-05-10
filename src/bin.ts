@@ -415,8 +415,8 @@ function printUsage(): void {
       "  harness-router install --target <id>    Install into one host only.",
       "  harness-router install --print          Print the config snippet for each host (no file writes).",
       "  harness-router uninstall                Remove the entry from each host.",
-      "  harness-router auth { create | show | rotate | revoke }",
-      "                                          Manage the bearer token used for non-loopback HTTP.",
+      "  harness-router auth                     Show the bearer token used for non-loopback HTTP.",
+      "  harness-router auth rotate              Replace the existing token with a fresh one.",
       '  harness-router route "<prompt>"         Pick a service and dispatch (live streaming).',
       "  harness-router list-services            Show enabled services.",
       "  harness-router dashboard                Show quota + breaker status (one-shot).",
@@ -532,14 +532,9 @@ export async function main(argv: string[]): Promise<number> {
       if (values["skip-install"] === true) wizardOpts.skipInstall = true;
       return runWizard(wizardOpts);
     }
-    case "auth": {
-      const action = rest[0];
-      if (!action) {
-        process.stderr.write("auth: missing action. Expected: create | show | rotate | revoke\n");
-        return 1;
-      }
-      return cmdAuth(action);
-    }
+    case "auth":
+      // No subcommand → show. `auth rotate` is the only other action.
+      return cmdAuth(rest[0]);
     case "list-services":
       return cmdListServices(configPath);
     case "dashboard": {

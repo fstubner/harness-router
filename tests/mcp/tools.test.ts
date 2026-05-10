@@ -216,23 +216,6 @@ describe("code — mode: fanout", () => {
     }
   });
 
-  it("honours the explicit services whitelist", async () => {
-    const services = { a: makeService("a"), b: makeService("b") };
-    const dispatchers: Record<string, Dispatcher> = {
-      a: new FakeDispatcher("a"),
-      b: new FakeDispatcher("b"),
-    };
-    const holder = buildHolder(services, dispatchers);
-    const r = await invokeTool(
-      "code",
-      { prompt: "hi", mode: "fanout", services: ["b"] },
-      { holder },
-    );
-    const data = r.data as FanoutData;
-    expect(data.results).toHaveLength(1);
-    expect(data.results[0]!.service).toBe("b");
-  });
-
   it("returns an empty results array (with error) when nothing is available", async () => {
     const services = { a: makeService("a") };
     const dispatchers: Record<string, Dispatcher> = {
@@ -245,7 +228,9 @@ describe("code — mode: fanout", () => {
     expect(data.error).toBeDefined();
   });
 
-  it("resolves the `models` axis to one service per model (subscription tier preferred)", async () => {
+  it("expands the `models` axis to ALL routes per model (multi-harness fanout)", async () => {
+    // Two services per model — one subscription, one metered. Fanout
+    // dispatches to BOTH because that's the comparison the user wanted.
     const services = {
       a_sub: makeService("a_sub", { model: "model-a", tier: "subscription" }),
       a_metered: makeService("a_metered", { model: "model-a", tier: "metered" }),
@@ -271,40 +256,15 @@ describe("code — mode: fanout", () => {
       { holder },
     );
     const data = r.data as FanoutData;
-    expect(data.results).toHaveLength(2);
+    // Both model-a routes (sub + metered) AND the model-b metered route.
+    expect(data.results).toHaveLength(3);
     const byService = new Map(data.results.map((it) => [it.service, it]));
     expect(byService.get("a_sub")).toBeDefined();
-    expect(byService.get("a_metered")).toBeUndefined();
+    expect(byService.get("a_metered")).toBeDefined();
     expect(byService.get("b_metered")).toBeDefined();
-    expect(byService.get("b_metered")!.tier).toBe("metered");
   });
 
-  it("falls through models to metered when subscription is unavailable", async () => {
-    const services = {
-      a_sub: makeService("a_sub", { model: "model-a", tier: "subscription" }),
-      a_metered: makeService("a_metered", { model: "model-a", tier: "metered" }),
-    };
-    const dispatchers: Record<string, Dispatcher> = {
-      a_sub: new FakeDispatcher("a_sub", { output: "", service: "a_sub", success: true }, false),
-      a_metered: new FakeDispatcher("a_metered", {
-        output: "from-metered",
-        service: "a_metered",
-        success: true,
-      }),
-    };
-    const holder = buildHolder(services, dispatchers, ["model-a"]);
-    const r = await invokeTool(
-      "code",
-      { prompt: "hi", mode: "fanout", models: ["model-a"] },
-      { holder },
-    );
-    const data = r.data as FanoutData;
-    expect(data.results).toHaveLength(1);
-    expect(data.results[0]!.service).toBe("a_metered");
-    expect(data.results[0]!.tier).toBe("metered");
-  });
-
-  it("returns an error when none of the requested models can be resolved", async () => {
+  it("returns an error when none of the requested models has a route", async () => {
     const services = { a: makeService("a", { model: "model-a" }) };
     const dispatchers: Record<string, Dispatcher> = { a: new FakeDispatcher("a") };
     const holder = buildHolder(services, dispatchers, ["model-a"]);
@@ -318,21 +278,7 @@ describe("code — mode: fanout", () => {
     expect(data.error).toMatch(/model-z/);
   });
 
-  it("rejects when both `services` and `models` axes are passed", async () => {
-    const services = { a: makeService("a", { model: "model-a" }) };
-    const dispatchers: Record<string, Dispatcher> = { a: new FakeDispatcher("a") };
-    const holder = buildHolder(services, dispatchers, ["model-a"]);
-    const r = await invokeTool(
-      "code",
-      { prompt: "hi", mode: "fanout", services: ["a"], models: ["model-a"] },
-      { holder },
-    );
-    const data = r.data as FanoutData;
-    expect(data.results).toEqual([]);
-    expect(data.error).toMatch(/mutually exclusive/i);
-  });
-
-  it("falls back to mixtureDefault when neither axis is passed", async () => {
+  it("falls back to mixtureDefault when models is omitted", async () => {
     const services = {
       a: makeService("a", { model: "model-a" }),
       b: makeService("b", { model: "model-b" }),
@@ -355,31 +301,34 @@ describe("code — mode: fanout", () => {
     expect(names).toEqual(new Set(["a", "c"]));
   });
 
-  it("explicit services override mixtureDefault", async () => {
+  it("explicit `models` overrides mixtureDefault", async () => {
+    // models: takes precedence over mixture_default. Useful when the
+    // user wants to do a one-off comparison different from the wizard's
+    // pre-configured fan-out set.
     const services = {
-      a: makeService("a", { model: "model-a" }),
-      b: makeService("b", { model: "model-b" }),
-      c: makeService("c", { model: "model-c" }),
+      a_sub: makeService("a_sub", { model: "model-a" }),
+      b_sub: makeService("b_sub", { model: "model-b" }),
+      c_sub: makeService("c_sub", { model: "model-c" }),
     };
     const dispatchers: Record<string, Dispatcher> = {
-      a: new FakeDispatcher("a"),
-      b: new FakeDispatcher("b"),
-      c: new FakeDispatcher("c"),
+      a_sub: new FakeDispatcher("a_sub"),
+      b_sub: new FakeDispatcher("b_sub"),
+      c_sub: new FakeDispatcher("c_sub"),
     };
     const holder = buildHolder(services, dispatchers, ["model-a", "model-b", "model-c"]);
     const state = holder.state;
     holder.replace({
       ...state,
-      config: { ...state.config, mixtureDefault: ["a"] },
+      config: { ...state.config, mixtureDefault: ["a_sub"] },
     });
     const r = await invokeTool(
       "code",
-      { prompt: "hi", mode: "fanout", services: ["b", "c"] },
+      { prompt: "hi", mode: "fanout", models: ["model-b", "model-c"] },
       { holder },
     );
     const data = r.data as FanoutData;
     const names = new Set(data.results.map((it) => it.service));
-    expect(names).toEqual(new Set(["b", "c"]));
+    expect(names).toEqual(new Set(["b_sub", "c_sub"]));
   });
 });
 

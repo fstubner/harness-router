@@ -76,17 +76,24 @@ const promptSchema = z
  *
  * `mode` discriminates between dispatching once and fanning out:
  *   - "single" (default) → walk priority list, return one result.
- *   - "fanout"           → run prompt against multiple services in parallel,
- *                          return one result per service (caller synthesises).
+ *   - "fanout"           → run prompt against multiple routes in parallel,
+ *                          return one result per route (caller synthesises).
  *
- * `models` and `services` are only meaningful for `mode: "fanout"`. They're
- * mutually exclusive — pass at most one. When neither is passed in fanout
- * mode, the router uses `mixture_default` from config.yaml; if that's absent
- * too, it fans out to every available service.
+ * `models` is only meaningful for `mode: "fanout"`. When omitted, the router
+ * uses `mixture_default` from config.yaml; if that's absent too, it fans out
+ * to every available route. Each model in the list expands to ALL of its
+ * registered routes (every harness on subscription tier, every metered
+ * provider) — multi-harness configs naturally produce per-harness
+ * comparisons.
  *
  * `hints` is only meaningful for `mode: "single"`. Hints in fanout mode are
  * silently ignored (rather than rejected) so callers don't have to branch
  * based on mode at every call site.
+ *
+ * (v0.2 had a `services` axis here that exposed the router's internal
+ * synthetic ids — `opus::claude_code` etc. — to agents. Dropped in v0.3
+ * because the model-keyed config means agents should never need to think
+ * in service ids. Use a focused priority list and `models` instead.)
  */
 const codeInputShape = {
   prompt: promptSchema,
@@ -97,21 +104,14 @@ const codeInputShape = {
     .optional()
     .describe('Dispatch mode. "single" (default) routes once; "fanout" runs in parallel.'),
   hints: routeHintsSchema.optional().describe('Routing hints. Only honoured when mode="single".'),
-  services: z
-    .array(z.string().max(MAX_PATH_LEN))
-    .max(MAX_FILES)
-    .optional()
-    .describe(
-      "Fanout-only: explicit subset of services. Mutually exclusive with `models`. " +
-        "When omitted, falls back to `mixture_default` from config.yaml, then to all available services.",
-    ),
   models: z
     .array(z.string().max(MAX_PATH_LEN))
     .max(MAX_FILES)
     .optional()
     .describe(
-      "Fanout-only: list of canonical model keys. The router resolves each to one service " +
-        "(subscription route preferred, metered fallthrough). Mutually exclusive with `services`.",
+      "Fanout-only: list of canonical model keys. Each expands to ALL of its registered " +
+        "routes (every harness on subscription, every metered provider). When omitted, " +
+        "falls back to `mixture_default` from config.yaml, then to all available routes.",
     ),
 } as const;
 
@@ -350,62 +350,39 @@ async function handleCodeFanout(
     const progressToken = extra?._meta?.progressToken;
     const counter = { value: 0 };
 
-    const servicesAxis = input.services ?? [];
     const modelsAxis = input.models ?? [];
 
-    // Axes are mutually exclusive — one keys on services, the other on models.
-    if (servicesAxis.length > 0 && modelsAxis.length > 0) {
-      return {
-        results: [],
-        error:
-          "`services` and `models` are mutually exclusive — pass at most one. " +
-          "Use `services` to name dispatchers directly; use `models` to name " +
-          "canonical model IDs and let the router pick a service for each.",
-      };
-    }
-
-    // Resolve the candidate whitelist. Three precedence levels:
-    //   1. Explicit `services` from the caller.
-    //   2. Explicit `models` from the caller — resolve each to one service
-    //      via the router's auto-derived route table (subscription preferred).
-    //   3. Wizard-configured `mixtureDefault` from config.yaml.
-    //   4. Fall through to "every available service" (historical default).
+    // Resolve the candidate whitelist. Two precedence levels:
+    //   1. Explicit `models` from the caller — each model expands to ALL of
+    //      its registered routes (every harness on subscription, every
+    //      metered provider).
+    //   2. Wizard-configured `mixtureDefault` from config.yaml — already
+    //      pre-expanded to per-route synthetic ids by the v3→v2 adapter.
+    //   3. Fall through to "every available route" (router-wide default).
     let whitelist: readonly string[] | null = null;
-    if (servicesAxis.length > 0) {
-      whitelist = servicesAxis;
-    } else if (modelsAxis.length > 0) {
-      const resolved: string[] = [];
+    if (modelsAxis.length > 0) {
+      const expanded: string[] = [];
       const unresolved: string[] = [];
-      const isUsable = (name: string): boolean => {
-        const svc = state.config.services[name];
-        if (!svc?.enabled) return false;
-        const disp = state.dispatchers[name];
-        if (!disp?.isAvailable()) return false;
-        const breaker = state.router.getBreaker(name);
-        if (breaker?.isTripped) return false;
-        return true;
-      };
       for (const model of modelsAxis) {
         const routes = state.router.servicesForModel(model);
-        // Subscription tier first; falls through to metered to honour the
-        // user's "I want this model, even if it costs me" intent.
-        const ordered = [...routes.subscription, ...routes.metered];
-        const pick = ordered.find(isUsable);
-        if (pick) {
-          if (!resolved.includes(pick)) resolved.push(pick);
-        } else {
+        const all = [...routes.subscription, ...routes.metered];
+        if (all.length === 0) {
           unresolved.push(model);
+          continue;
+        }
+        for (const id of all) {
+          if (!expanded.includes(id)) expanded.push(id);
         }
       }
-      if (resolved.length === 0) {
+      if (expanded.length === 0) {
         return {
           results: [],
           error:
-            `None of the requested models could be resolved to a usable service: ${unresolved.join(", ")}. ` +
-            "Run `dashboard` to see which services are reachable for each model.",
+            `None of the requested models has any registered route: ${unresolved.join(", ")}. ` +
+            "Check `harness-router://status` to see which models are configured.",
         };
       }
-      whitelist = resolved;
+      whitelist = expanded;
     } else if (state.config.mixtureDefault && state.config.mixtureDefault.length > 0) {
       whitelist = state.config.mixtureDefault;
     }
