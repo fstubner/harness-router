@@ -15,7 +15,7 @@
 
 import { promises as fs } from "node:fs";
 
-import { loadConfig } from "../config.js";
+import { loadConfig } from "../config/index.js";
 import { QuotaCache } from "../quota.js";
 import { Router } from "../router.js";
 import type { RouterConfig } from "../types.js";

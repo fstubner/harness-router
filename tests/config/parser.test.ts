@@ -1,5 +1,5 @@
 /**
- * Tests for the v0.3 config loader.
+ * Tests for the YAML → Config parser.
  *
  * Covers: shape validation, env-var interpolation, multi-route support
  * (single-object shorthand vs array form), cross-reference checks
@@ -9,10 +9,10 @@
 
 import { describe, expect, it } from "vitest";
 
-import { parseV3Text } from "../../src/v3/loader.js";
-import { V3ConfigError } from "../../src/v3/types.js";
+import { parseConfigText } from "../../src/config/parser.js";
+import { ConfigError } from "../../src/config/types.js";
 
-describe("v0.3 loader — happy path", () => {
+describe("parser — happy path", () => {
   it("parses a minimal valid config (single subscription, shorthand)", () => {
     const yaml = `
 priority: [opus]
@@ -21,7 +21,7 @@ models:
     subscription:
       harness: claude_code
 `;
-    const cfg = parseV3Text(yaml);
+    const cfg = parseConfigText(yaml);
     expect(cfg.priority).toEqual(["opus"]);
     expect(cfg.models.opus?.subscription).toHaveLength(1);
     expect(cfg.models.opus?.subscription?.[0]?.harness).toBe("claude_code");
@@ -38,7 +38,7 @@ models:
       - harness: cursor
       - harness: opencode
 `;
-    const cfg = parseV3Text(yaml);
+    const cfg = parseConfigText(yaml);
     expect(cfg.models.opus?.subscription).toHaveLength(3);
     expect(cfg.models.opus?.subscription?.map((r) => r.harness)).toEqual([
       "claude_code",
@@ -58,7 +58,7 @@ models:
       base_url: https://api.anthropic.com/v1
       api_key: \${ANTHROPIC_API_KEY}
 `;
-    const cfg = parseV3Text(yaml, (n) => (n === "ANTHROPIC_API_KEY" ? "sk-test" : undefined));
+    const cfg = parseConfigText(yaml, (n) => (n === "ANTHROPIC_API_KEY" ? "sk-test" : undefined));
     expect(cfg.models.opus?.subscription?.[0]?.harness).toBe("claude_code");
     expect(cfg.models.opus?.metered?.[0]?.api_key).toBe("sk-test");
     expect(cfg.models.opus?.metered?.[0]?.base_url).toBe("https://api.anthropic.com/v1");
@@ -75,7 +75,7 @@ models:
       - base_url: http://localhost:11434/v1
         api_key: ollama
 `;
-    const cfg = parseV3Text(yaml, () => "x");
+    const cfg = parseConfigText(yaml, () => "x");
     expect(cfg.models.opus?.metered).toHaveLength(2);
     expect(cfg.models.opus?.metered?.[0]?.base_url).toMatch(/anthropic/);
     expect(cfg.models.opus?.metered?.[1]?.base_url).toMatch(/localhost/);
@@ -90,7 +90,7 @@ models:
       base_url: \${MY_URL}
       api_key: \${MY_KEY}
 `;
-    const cfg = parseV3Text(yaml, (n) => ({ MY_URL: "http://x", MY_KEY: "k" })[n]);
+    const cfg = parseConfigText(yaml, (n) => ({ MY_URL: "http://x", MY_KEY: "k" })[n]);
     expect(cfg.models.m?.metered?.[0]?.base_url).toBe("http://x");
     expect(cfg.models.m?.metered?.[0]?.api_key).toBe("k");
   });
@@ -103,12 +103,12 @@ models:
     metered:
       base_url: \${MISSING}
 `;
-    const cfg = parseV3Text(yaml, () => undefined);
+    const cfg = parseConfigText(yaml, () => undefined);
     expect(cfg.models.m?.metered?.[0]?.base_url).toBe("${MISSING}");
   });
 
   it("freezes the returned config (catches accidental mutation)", () => {
-    const cfg = parseV3Text(`
+    const cfg = parseConfigText(`
 priority: [opus]
 models:
   opus:
@@ -121,7 +121,7 @@ models:
 
 describe("v0.3 loader — validation", () => {
   it("rejects a config with no models field", () => {
-    expect(() => parseV3Text("priority: []\n")).toThrow(/models field missing/);
+    expect(() => parseConfigText("priority: []\n")).toThrow(/models field missing/);
   });
 
   it("rejects a model with neither subscription nor metered", () => {
@@ -130,7 +130,7 @@ priority: []
 models:
   empty: {}
 `;
-    expect(() => parseV3Text(yaml)).toThrow(/at least one of subscription, metered/);
+    expect(() => parseConfigText(yaml)).toThrow(/at least one of subscription, metered/);
   });
 
   it("rejects a subscription route without a harness", () => {
@@ -140,7 +140,7 @@ models:
   m:
     subscription: {}
 `;
-    expect(() => parseV3Text(yaml)).toThrow(/harness/);
+    expect(() => parseConfigText(yaml)).toThrow(/harness/);
   });
 
   it("rejects a metered route without a base_url", () => {
@@ -150,7 +150,7 @@ models:
   m:
     metered: {}
 `;
-    expect(() => parseV3Text(yaml)).toThrow(/base_url/);
+    expect(() => parseConfigText(yaml)).toThrow(/base_url/);
   });
 
   it("rejects priority entries that don't reference a model", () => {
@@ -161,7 +161,7 @@ models:
     subscription:
       harness: claude_code
 `;
-    expect(() => parseV3Text(yaml)).toThrow(/"missing"/);
+    expect(() => parseConfigText(yaml)).toThrow(/"missing"/);
   });
 
   it("rejects mixture_default entries that don't reference a model", () => {
@@ -173,7 +173,7 @@ models:
     subscription:
       harness: claude_code
 `;
-    expect(() => parseV3Text(yaml)).toThrow(/"ghost"/);
+    expect(() => parseConfigText(yaml)).toThrow(/"ghost"/);
   });
 
   it("rejects bare-non-array subscription (e.g. a string)", () => {
@@ -183,7 +183,7 @@ models:
   m:
     subscription: "not-an-object"
 `;
-    expect(() => parseV3Text(yaml)).toThrow(/object or an array/);
+    expect(() => parseConfigText(yaml)).toThrow(/object or an array/);
   });
 
   it("collects multiple issues and reports them all in one throw", () => {
@@ -195,11 +195,11 @@ models:
     subscription: {}
 `;
     try {
-      parseV3Text(yaml);
+      parseConfigText(yaml);
       expect.fail("should have thrown");
     } catch (err) {
-      expect(err).toBeInstanceOf(V3ConfigError);
-      const issues = (err as V3ConfigError).issues;
+      expect(err).toBeInstanceOf(ConfigError);
+      const issues = (err as ConfigError).issues;
       expect(issues.length).toBeGreaterThanOrEqual(4);
     }
   });
@@ -213,7 +213,7 @@ models: {}
 http:
   port: 9000
 `;
-    const cfg = parseV3Text(yaml);
+    const cfg = parseConfigText(yaml);
     expect(cfg.http?.port).toBe(9000);
   });
 
@@ -229,7 +229,7 @@ http:
   auth:
     required: false
 `;
-    const cfg = parseV3Text(yaml);
+    const cfg = parseConfigText(yaml);
     expect(cfg.http?.auth?.required).toBe(true);
   });
 
@@ -244,7 +244,7 @@ http:
   auth:
     required: false
 `;
-    const cfg = parseV3Text(yaml);
+    const cfg = parseConfigText(yaml);
     expect(cfg.http?.auth?.required).toBe(false);
   });
 
@@ -257,6 +257,6 @@ models:
 http:
   port: not-a-number
 `;
-    expect(() => parseV3Text(yaml)).toThrow(/port/);
+    expect(() => parseConfigText(yaml)).toThrow(/port/);
   });
 });

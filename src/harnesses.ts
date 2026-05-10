@@ -20,7 +20,7 @@
 import { spawn } from "node:child_process";
 import which from "which";
 
-import { loadConfig } from "./config.js";
+import { loadConfig } from "./config/index.js";
 import { buildDispatchers } from "./mcp/dispatcher-factory.js";
 import type { Dispatcher } from "./dispatchers/base.js";
 import { detectRateLimitInText } from "./dispatchers/shared/rate-limit-text.js";
@@ -446,6 +446,92 @@ async function loadGenericCliSpecs(configPath: string | undefined): Promise<Harn
     out.push(spec);
   }
   return out;
+}
+
+/**
+ * Per-route probe results. One row per configured service (i.e. one row
+ * per route in the v0.3 schema, since the adapter generates one service
+ * per route). Surfaces the specific (harness, model, base_url?) tuple
+ * that succeeded or failed — useful for diagnosing
+ * "wizard wrote `claude-3.7-sonnet` but my CLI rejects it" issues.
+ */
+export interface RouteProbeResult {
+  /** Synthetic service id (e.g. `opus::claude_code`). */
+  serviceId: string;
+  harness: string;
+  model: string;
+  /** Set on metered routes; helps disambiguate same-model providers. */
+  baseUrl?: string;
+  ok: boolean;
+  durationMs: number;
+  error?: string;
+}
+
+/**
+ * Verify every enabled route in the user's config by dispatching a 5-token
+ * prompt and confirming a non-empty response. This is the closest we can
+ * get to "is the (harness, model) pair actually accepted by the CLI?"
+ * without per-CLI list-models probes (which most CLIs don't expose).
+ *
+ * Failures here narrow the diagnosis — "model rejected by CLI" looks
+ * different from "auth expired" looks different from "rate-limited."
+ */
+export async function verifyAllRoutes(configPath: string | undefined): Promise<RouteProbeResult[]> {
+  const config: RouterConfig = await loadConfig(configPath);
+  const dispatchers = await buildDispatchers(config);
+  const results: RouteProbeResult[] = [];
+
+  for (const [serviceId, svc] of Object.entries(config.services)) {
+    if (!svc.enabled) continue;
+    const dispatcher = dispatchers[serviceId];
+    if (!dispatcher) {
+      results.push({
+        serviceId,
+        harness: svc.harness ?? serviceId,
+        model: svc.model ?? "(unspecified)",
+        ...(svc.baseUrl ? { baseUrl: svc.baseUrl } : {}),
+        ok: false,
+        durationMs: 0,
+        error: "dispatcher not built (CLI not on PATH or factory error)",
+      });
+      continue;
+    }
+
+    const t0 = Date.now();
+    try {
+      const result = await dispatcher.dispatch(
+        "Reply with only the single word: ok",
+        [],
+        process.cwd(),
+        { timeoutMs: 60_000 },
+      );
+      const durationMs = Date.now() - t0;
+      const ok = result.success && (result.output ?? "").length > 0;
+      const row: RouteProbeResult = {
+        serviceId,
+        harness: svc.harness ?? serviceId,
+        model: svc.model ?? "(unspecified)",
+        ...(svc.baseUrl ? { baseUrl: svc.baseUrl } : {}),
+        ok,
+        durationMs,
+      };
+      if (!ok) {
+        row.error = result.error ?? `dispatch returned success=${result.success} with empty output`;
+      }
+      results.push(row);
+    } catch (err) {
+      results.push({
+        serviceId,
+        harness: svc.harness ?? serviceId,
+        model: svc.model ?? "(unspecified)",
+        ...(svc.baseUrl ? { baseUrl: svc.baseUrl } : {}),
+        ok: false,
+        durationMs: Date.now() - t0,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return results;
 }
 
 async function defaultVerify(

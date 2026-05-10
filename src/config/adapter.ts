@@ -1,12 +1,10 @@
 /**
- * V3Config → RouterConfig adapter.
+ * Config → RouterConfig adapter.
  *
- * The existing router / dispatchers / quota layer is built around the v0.2
- * `RouterConfig` shape (services keyed by name, tier as a field). v0.3
- * configs are model-keyed with arrays of routes per (model, tier). This
- * adapter generates a v0.2-shaped view from a V3Config so the existing
- * runtime can keep working unchanged while the config schema is the new
- * shape on disk.
+ * The router / dispatchers / quota layer consumes a flat `RouterConfig`
+ * (services-keyed, in `src/types.ts`). The on-disk schema (`./types.ts`)
+ * is model-keyed with arrays of routes per (model, tier). This adapter
+ * generates the runtime view from a Config.
  *
  * Synthetic service ids follow `${model}::${routeKey}`:
  *
@@ -17,15 +15,15 @@
  *
  * They never appear in user-facing config — they're internal handles the
  * dispatcher factory and circuit breakers key on. Choosing a debuggable
- * format (rather than positional indices like `opus::sub::0`) means logs,
- * dashboards, and breaker error messages tell you which underlying CLI or
- * provider tripped without an extra lookup.
+ * format (rather than positional indices) means logs, dashboards, and
+ * breaker error messages tell you which underlying CLI or provider tripped
+ * without an extra lookup.
  *
  * Pure function. No I/O.
  */
 
 import type { RouterConfig, ServiceConfig } from "../types.js";
-import type { V3Config, V3MeteredRoute, V3ModelEntry, V3SubscriptionRoute } from "./types.js";
+import type { Config, MeteredRoute, SubscriptionRoute } from "./types.js";
 
 const SEPARATOR = "::";
 
@@ -35,12 +33,12 @@ export function syntheticServiceId(model: string, routeKey: string): string {
 }
 
 /**
- * Disambiguator for a metered route — extract the hostname from the
- * `base_url`. Falls back to a generic "metered" tag when the URL doesn't
- * parse (loader's validation should prevent that, but we'd rather emit
- * something usable than throw mid-adapter).
+ * Disambiguator for a metered route — extract the hostname (with port, if
+ * present) from the `base_url`. Falls back to a generic "metered" tag when
+ * the URL doesn't parse (parser validation should prevent that, but we'd
+ * rather emit something usable than throw mid-adapter).
  */
-function meteredRouteKey(route: V3MeteredRoute): string {
+function meteredRouteKey(route: MeteredRoute): string {
   try {
     return new URL(route.base_url).host;
   } catch {
@@ -66,14 +64,14 @@ function ensureUnique(seen: Set<string>, candidate: string): string {
   return out;
 }
 
-export function v3ToRouterConfig(v3: V3Config): RouterConfig {
+export function toRouterConfig(cfg: Config): RouterConfig {
   const services: Record<string, ServiceConfig> = {};
   const disabled: string[] = [];
   // Keep per-model service ids so mixture_default expansion below can
   // reference exactly the ones we emitted.
   const idsByModel: Map<string, string[]> = new Map();
 
-  for (const [model, entry] of Object.entries(v3.models)) {
+  for (const [model, entry] of Object.entries(cfg.models)) {
     const seen = new Set<string>();
     const ids: string[] = [];
     for (const route of entry.subscription ?? []) {
@@ -91,30 +89,26 @@ export function v3ToRouterConfig(v3: V3Config): RouterConfig {
     if (ids.length > 0) idsByModel.set(model, ids);
   }
 
-  const cfg: RouterConfig = {
+  const routerCfg: RouterConfig = {
     services,
-    modelPriority: v3.priority,
+    modelPriority: cfg.priority,
   };
-  if (disabled.length > 0) cfg.disabled = disabled;
-  if (v3.mixture_default && v3.mixture_default.length > 0) {
+  if (disabled.length > 0) routerCfg.disabled = disabled;
+  if (cfg.mixture_default && cfg.mixture_default.length > 0) {
     // Each model key in mixture_default expands to ALL of its synthetic
     // service ids — both subscription and metered tiers, all routes per
     // tier. The router then filters to whichever are usable at dispatch
     // time.
     const expanded: string[] = [];
-    for (const model of v3.mixture_default) {
+    for (const model of cfg.mixture_default) {
       for (const id of idsByModel.get(model) ?? []) expanded.push(id);
     }
-    if (expanded.length > 0) cfg.mixtureDefault = expanded;
+    if (expanded.length > 0) routerCfg.mixtureDefault = expanded;
   }
-  return cfg;
+  return routerCfg;
 }
 
-function subscriptionToService(
-  id: string,
-  model: string,
-  route: V3SubscriptionRoute,
-): ServiceConfig {
+function subscriptionToService(id: string, model: string, route: SubscriptionRoute): ServiceConfig {
   const svc: ServiceConfig = {
     name: id,
     enabled: route.enabled !== false,
@@ -129,7 +123,7 @@ function subscriptionToService(
   return svc;
 }
 
-function meteredToService(id: string, model: string, route: V3MeteredRoute): ServiceConfig {
+function meteredToService(id: string, model: string, route: MeteredRoute): ServiceConfig {
   const svc: ServiceConfig = {
     name: id,
     enabled: route.enabled !== false,
@@ -142,6 +136,3 @@ function meteredToService(id: string, model: string, route: V3MeteredRoute): Ser
   if (route.cli_model_override) svc.cliModel = route.cli_model_override;
   return svc;
 }
-
-// Re-exports for the v3 module index to surface a single import point.
-export type { V3Config, V3ModelEntry, V3SubscriptionRoute, V3MeteredRoute };

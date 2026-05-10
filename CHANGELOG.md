@@ -9,6 +9,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (empty — track changes for the next release here)
 
+## [0.3.0] — 2026-05-12
+
+Major redesign. Breaking changes throughout. The npm package renames from
+`harness-router-mcp` to `harness-router`. v0.2 configs are not migrated;
+run `harness-router onboard` to generate a fresh v0.3 config.
+
+### Breaking changes
+
+- **Package + binary rename**: `harness-router-mcp` → `harness-router`. No
+  alias on the old name; this is a hard cutover.
+- **Bare invocation = stdio MCP server**. The v0.2 `mcp` subcommand is
+  gone. Hosts launch `npx -y harness-router` directly.
+- **HTTP transport moves to `harness-router serve`** with `--http`,
+  `--bind`, `--require-auth` flags.
+- **Config schema is model-keyed**, not service-keyed. The v0.2
+  `services:` block is gone, replaced by `models:` with per-tier route
+  arrays. `tier` is structural (subscription / metered keys), not a
+  field. `cli_model` is gone; pinned IDs are recommended everywhere
+  with `cli_model_override` as the rare escape hatch. v0.2 configs
+  produce a `ConfigError` pointing at `onboard`; there is no migrator.
+- **MCP tool surface collapsed from 4 tools to 1**. The new tool is
+  `code` with `mode: "single" | "fanout"`. The v0.2 `code_mixture`,
+  `dashboard`, `get_quota_status` tools are gone. The 3 prompts
+  (`route-task`, `compare-models`, `health-check`) are deleted.
+- **MCP resources replace dashboard tooling**:
+  `harness-router://status` (text) and `harness-router://status.json`
+  (JSON) — read-on-demand, no subscriptions.
+- **`code` tool fanout dropped the `services` axis**. Only `models` is
+  exposed, matching the model-keyed config. Internal synthetic ids
+  (`opus::claude_code`) stay internal.
+
+### Added
+
+- **Multi-harness routes per model**. `models.opus.subscription` is now
+  an array of routes; the wizard picks every detected harness that the
+  user says serves a given model, and the router falls through within
+  the same tier if the highest-quota route fails.
+- **SQLite-backed shared quota** at `~/.harness-router/state.db`. WAL
+  mode + additive UPSERT means concurrent stdio servers (Claude Desktop
+  - Cursor + Codex on the same machine) accumulate counts cleanly
+    without races, no daemon required.
+- **HTTP bearer-token auth**: loopback bypass by default; non-loopback
+  bind force-enables auth and auto-creates a token at
+  `~/.harness-router/auth.token` chmod 600. New `harness-router auth`
+  (show) and `harness-router auth rotate` subcommands.
+- **OpenRouter-driven onboard wizard**. Catalog-free — fetches
+  `/api/v1/models` for a multi-select, falls through to free-text input
+  on any failure. Local models / niche providers go through free-text.
+- **Wizard generates metered fallback** when `ANTHROPIC_API_KEY` /
+  `OPENAI_API_KEY` / `GEMINI_API_KEY` is set and the model name matches
+  the provider regex.
+- **`harness-router doctor --probe-routes`** dispatches a tiny prompt
+  against every (harness, model) route in the config to verify the
+  CLI actually accepts the `--model` value. Catches "wizard wrote a
+  name the CLI rejects" issues.
+
+### Removed
+
+- Auto-detect path in `loadConfig`. No config → throw
+  `ConfigMissingError` pointing at `onboard`. The wizard is the single
+  path to a working config.
+- v0.2 → v0.3 migrator. Greenfield: no production deployments to
+  carry forward.
+- Hardcoded `MODEL_CATALOG` per-CLI map. Wizard is now catalog-free.
+- `LegacyConfigError` and the v0.2 detection path.
+
+### Internal restructure
+
+- `src/v3/` → `src/config/` (parser, adapter, render, types).
+  `V3Config` / `V3ModelEntry` / `V3ConfigError` etc. drop the `V3`
+  prefix — there's only ever been one schema.
+- `src/onboarding.ts` → `src/harnesses.ts` (resolves the file/dir
+  naming collision with `src/onboarding/`).
+- `src/v3/openrouter.ts` → `src/onboarding/openrouter.ts` (it's a
+  wizard helper, not schema).
+- `parseV3Text` → `parseConfigText`, `v3ToRouterConfig` →
+  `toRouterConfig`, `renderV3Yaml` → `renderConfigYaml`,
+  `buildV3WizardConfig` → `buildWizardConfig`.
+
+### Tests
+
+- 454 tests passing across 33 files (was 367 in v0.2.0).
+- Every test using a v0.2 yaml shape rewritten to v0.3.
+- New coverage: SQLite cross-process accumulation, HTTP auth (loopback
+  bypass + bearer), multi-harness route expansion, `--probe-routes`.
+
 ## [0.2.1] — 2026-05-04
 
 Patch release closing two credibility gaps the v0.2.0 docs implied but

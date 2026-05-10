@@ -12,7 +12,10 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { fetchOpenRouterCatalog, fetchOpenRouterCatalogVerbose } from "../../src/v3/openrouter.js";
+import {
+  fetchOpenRouterCatalog,
+  fetchOpenRouterCatalogVerbose,
+} from "../../src/onboarding/openrouter.js";
 
 function mockFetch(impl: (url: string, init?: RequestInit) => Response | Promise<Response>) {
   return vi.fn(async (url: string | URL | Request, init?: RequestInit) => {

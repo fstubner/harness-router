@@ -18,7 +18,7 @@
  *   7. Write `~/.harness-router/config.yaml` in v0.3 shape and run install
  *      for each chosen host.
  *
- * The pure parts (`buildV3WizardConfig` + `renderV3WizardYaml`) are
+ * The pure parts (`buildWizardConfig` + `renderWizardYaml`) are
  * exported and tested without the inquirer prompt layer.
  */
 
@@ -28,20 +28,20 @@ import path from "node:path";
 
 import { checkbox, confirm, input, select, Separator } from "@inquirer/prompts";
 
-import { onboard, type HarnessId, type HarnessReport } from "../onboarding.js";
+import { onboard, type HarnessId, type HarnessReport } from "../harnesses.js";
 import {
   INSTALL_TARGETS,
   defaultEntry,
   type InstallTarget,
   type McpServerEntry,
 } from "../install/targets.js";
-import { renderV3Yaml } from "../v3/render.js";
+import { renderConfigYaml } from "../config/render.js";
 import {
   fetchOpenRouterCatalogVerbose,
   type CatalogModel,
   type CatalogProvider,
-} from "../v3/openrouter.js";
-import type { V3Config, V3MeteredRoute, V3ModelEntry, V3SubscriptionRoute } from "../v3/types.js";
+} from "./openrouter.js";
+import type { Config, MeteredRoute, ModelEntry, SubscriptionRoute } from "../config/types.js";
 
 // ---------------------------------------------------------------------------
 // Provider env-var policy
@@ -123,19 +123,19 @@ export interface BuildOpts {
 }
 
 /**
- * Build a {@link V3Config} from the wizard's collected state.
+ * Build a {@link Config} from the wizard's collected state.
  *
  * Skips choices that have no subscription harness AND no metered fallback —
  * an entry with neither route is invalid V3 and the loader would reject it.
  */
-export function buildV3WizardConfig(opts: BuildOpts): V3Config {
+export function buildWizardConfig(opts: BuildOpts): Config {
   const envFn = opts.envFn ?? ((n) => process.env[n]);
-  const models: Record<string, V3ModelEntry> = {};
+  const models: Record<string, ModelEntry> = {};
   const priority: string[] = [];
 
   for (const choice of opts.choices) {
-    const entry: V3ModelEntry = {};
-    const subs: V3SubscriptionRoute[] = [];
+    const entry: ModelEntry = {};
+    const subs: SubscriptionRoute[] = [];
     for (const harness of choice.subscriptionHarnesses ?? []) {
       subs.push({
         harness,
@@ -147,7 +147,7 @@ export function buildV3WizardConfig(opts: BuildOpts): V3Config {
     if (choice.addMetered) {
       const provider = findProviderForModel(choice.key, envFn);
       if (provider) {
-        const metered: V3MeteredRoute = {
+        const metered: MeteredRoute = {
           base_url: provider.baseUrl,
           api_key: `\${${provider.envVar}}`,
         };
@@ -163,7 +163,7 @@ export function buildV3WizardConfig(opts: BuildOpts): V3Config {
     if (models[key]) priority.push(key);
   }
 
-  const cfg: V3Config = { priority, models };
+  const cfg: Config = { priority, models };
   if (opts.mixtureDefault && opts.mixtureDefault.length > 0) {
     const mix: string[] = [];
     for (const k of opts.mixtureDefault) if (models[k] && !mix.includes(k)) mix.push(k);
@@ -173,7 +173,7 @@ export function buildV3WizardConfig(opts: BuildOpts): V3Config {
 }
 
 /** Convenience re-export so callers don't need to import from v3/. */
-export const renderV3WizardYaml = renderV3Yaml;
+export const renderWizardYaml = renderConfigYaml;
 
 /** Default location for the wizard's output. */
 export function defaultConfigPath(): string {
@@ -316,9 +316,9 @@ export async function runWizard(opts: RunWizardOpts = {}): Promise<number> {
     harnessCommand,
   };
   if (mixtureDefault.length > 0) buildOpts.mixtureDefault = mixtureDefault;
-  const config = buildV3WizardConfig(buildOpts);
+  const config = buildWizardConfig(buildOpts);
   const cfgPath = opts.configPath ?? defaultConfigPath();
-  const yamlText = renderV3Yaml(config);
+  const yamlText = renderConfigYaml(config);
 
   out.write("\n  Config preview:\n");
   out.write(yamlText.replace(/^/gm, "    "));

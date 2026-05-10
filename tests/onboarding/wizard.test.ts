@@ -2,17 +2,17 @@
  * Tests for the v0.3 wizard's pure parts.
  *
  * The interactive prompts can't be unit-tested without a TTY, but
- * `buildV3WizardConfig` (the model-keyed config builder) is a pure function.
+ * `buildWizardConfig` (the model-keyed config builder) is a pure function.
  */
 
 import { describe, expect, it } from "vitest";
 
 import {
-  buildV3WizardConfig,
-  renderV3WizardYaml,
+  buildWizardConfig,
+  renderWizardYaml,
   type ModelChoice,
 } from "../../src/onboarding/wizard.js";
-import type { HarnessId } from "../../src/onboarding.js";
+import type { HarnessId } from "../../src/harnesses.js";
 
 const harnessCommand = (id: HarnessId): string =>
   ({
@@ -24,9 +24,9 @@ const harnessCommand = (id: HarnessId): string =>
     copilot: "copilot",
   })[id] ?? id;
 
-describe("buildV3WizardConfig — single harness", () => {
+describe("buildWizardConfig — single harness", () => {
   it("builds a model-keyed entry with one subscription harness", () => {
-    const cfg = buildV3WizardConfig({
+    const cfg = buildWizardConfig({
       priority: ["opus"],
       choices: [{ key: "opus", subscriptionHarnesses: ["claude_code"] }],
       harnessCommand,
@@ -42,7 +42,7 @@ describe("buildV3WizardConfig — single harness", () => {
   it("does not include subscription when subscriptionHarnesses is empty/undefined", () => {
     // Use a model name that triggers the Anthropic provider matcher
     // (requires "claude" substring) so addMetered actually produces a route.
-    const cfg = buildV3WizardConfig({
+    const cfg = buildWizardConfig({
       priority: ["claude-opus-4-7"],
       choices: [{ key: "claude-opus-4-7", addMetered: true }],
       harnessCommand,
@@ -53,9 +53,9 @@ describe("buildV3WizardConfig — single harness", () => {
   });
 });
 
-describe("buildV3WizardConfig — multi-harness subscription", () => {
+describe("buildWizardConfig — multi-harness subscription", () => {
   it("emits N subscription routes for N harnesses, in order", () => {
-    const cfg = buildV3WizardConfig({
+    const cfg = buildWizardConfig({
       priority: ["opus"],
       choices: [
         {
@@ -83,7 +83,7 @@ describe("buildV3WizardConfig — multi-harness subscription", () => {
     // Order matters — the router uses array index as a quota-tiebreak when
     // multiple routes have equal headroom. Putting claude_code first means
     // it wins ties, e.g. when both Claude Pro and Cursor Pro have full quota.
-    const cfg = buildV3WizardConfig({
+    const cfg = buildWizardConfig({
       priority: ["opus"],
       choices: [{ key: "opus", subscriptionHarnesses: ["cursor", "claude_code"] }],
       harnessCommand,
@@ -94,9 +94,9 @@ describe("buildV3WizardConfig — multi-harness subscription", () => {
   });
 });
 
-describe("buildV3WizardConfig — metered fallback", () => {
+describe("buildWizardConfig — metered fallback", () => {
   it("adds a metered route when addMetered is true and the env var is set", () => {
-    const cfg = buildV3WizardConfig({
+    const cfg = buildWizardConfig({
       priority: ["claude-opus-4-7"],
       choices: [
         {
@@ -117,7 +117,7 @@ describe("buildV3WizardConfig — metered fallback", () => {
   });
 
   it("does not add metered when addMetered is true but no env var is set", () => {
-    const cfg = buildV3WizardConfig({
+    const cfg = buildWizardConfig({
       priority: ["claude-opus-4-7"],
       choices: [{ key: "claude-opus-4-7", addMetered: true }],
       harnessCommand,
@@ -129,7 +129,7 @@ describe("buildV3WizardConfig — metered fallback", () => {
   });
 
   it("routes the right provider per model key based on heuristic match", () => {
-    const cfg = buildV3WizardConfig({
+    const cfg = buildWizardConfig({
       priority: ["claude-opus-4-7", "gpt-5.4", "gemini-2.5-pro"],
       choices: [
         { key: "claude-opus-4-7", addMetered: true },
@@ -148,9 +148,9 @@ describe("buildV3WizardConfig — metered fallback", () => {
   });
 });
 
-describe("buildV3WizardConfig — priority + mixture filtering", () => {
+describe("buildWizardConfig — priority + mixture filtering", () => {
   it("filters priority to entries that survived (no orphan keys)", () => {
-    const cfg = buildV3WizardConfig({
+    const cfg = buildWizardConfig({
       priority: ["alive", "dead"],
       choices: [
         { key: "alive", subscriptionHarnesses: ["claude_code"] },
@@ -165,7 +165,7 @@ describe("buildV3WizardConfig — priority + mixture filtering", () => {
   });
 
   it("preserves mixture_default and dedupes", () => {
-    const cfg = buildV3WizardConfig({
+    const cfg = buildWizardConfig({
       priority: ["a", "b"],
       choices: [
         { key: "a", subscriptionHarnesses: ["claude_code"] },
@@ -179,7 +179,7 @@ describe("buildV3WizardConfig — priority + mixture filtering", () => {
   });
 
   it("filters mixture_default to keys that exist in models", () => {
-    const cfg = buildV3WizardConfig({
+    const cfg = buildWizardConfig({
       priority: ["a"],
       choices: [{ key: "a", subscriptionHarnesses: ["claude_code"] }],
       mixtureDefault: ["a", "ghost"],
@@ -190,7 +190,7 @@ describe("buildV3WizardConfig — priority + mixture filtering", () => {
   });
 
   it("omits mixture_default when no surviving entries", () => {
-    const cfg = buildV3WizardConfig({
+    const cfg = buildWizardConfig({
       priority: ["a"],
       choices: [{ key: "a", subscriptionHarnesses: ["claude_code"] }],
       mixtureDefault: ["ghost"],
@@ -208,7 +208,7 @@ describe("buildV3WizardConfig — priority + mixture filtering", () => {
         addMetered: true,
       },
     ];
-    const cfg = buildV3WizardConfig({
+    const cfg = buildWizardConfig({
       priority: ["claude-opus-4-7"],
       choices,
       harnessCommand,
@@ -219,9 +219,9 @@ describe("buildV3WizardConfig — priority + mixture filtering", () => {
   });
 });
 
-describe("renderV3WizardYaml", () => {
+describe("renderWizardYaml", () => {
   it("emits valid YAML with priority + models + mixture_default", () => {
-    const cfg = buildV3WizardConfig({
+    const cfg = buildWizardConfig({
       priority: ["opus", "gpt-5.4"],
       choices: [
         { key: "opus", subscriptionHarnesses: ["claude_code", "cursor"] },
@@ -231,7 +231,7 @@ describe("renderV3WizardYaml", () => {
       harnessCommand,
       envFn: () => undefined,
     });
-    const out = renderV3WizardYaml(cfg);
+    const out = renderWizardYaml(cfg);
     expect(out).toContain("priority:");
     expect(out).toContain("- opus");
     expect(out).toContain("- gpt-5.4");
@@ -244,13 +244,13 @@ describe("renderV3WizardYaml", () => {
   });
 
   it("never embeds the raw env var value — only the ${VAR} placeholder", () => {
-    const cfg = buildV3WizardConfig({
+    const cfg = buildWizardConfig({
       priority: ["claude-opus-4-7"],
       choices: [{ key: "claude-opus-4-7", addMetered: true }],
       harnessCommand,
       envFn: (n) => (n === "ANTHROPIC_API_KEY" ? "sk-secret-DO-NOT-LEAK" : undefined),
     });
-    const yaml = renderV3WizardYaml(cfg);
+    const yaml = renderWizardYaml(cfg);
     expect(yaml).not.toContain("sk-secret-DO-NOT-LEAK");
     expect(yaml).toContain("${ANTHROPIC_API_KEY}");
   });

@@ -1,455 +1,241 @@
-# harness-router-mcp
+# harness-router
 
 > **Use your AI subscriptions before paying for metered API.**
 > An MCP server that routes coding tasks model-first across whatever CLIs you have installed. Subscription-backed CLIs (Claude Code, Cursor, Codex, Copilot CLI, opencode) are tried first; metered API is the fallback.
 
-[![npm version](https://img.shields.io/npm/v/harness-router-mcp.svg)](https://www.npmjs.com/package/harness-router-mcp)
+[![npm version](https://img.shields.io/npm/v/harness-router.svg)](https://www.npmjs.com/package/harness-router)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-
-**Landing page:** [fstubner.github.io/harness-router-mcp](https://fstubner.github.io/harness-router-mcp/)
 
 ---
 
 ## What this does
 
-You declare a model preference list — for example:
+You declare a model priority list. For every coding request the router walks
+down it: for each model, it tries every subscription-backed CLI that can serve
+it (highest free quota first), then falls through to metered API. Only when
+every route for the top model is dead does it move to the next.
 
-```yaml
-model_priority:
-  - claude-opus-4.7
-  - gpt-5.4
-  - claude-sonnet-4.6
-```
-
-For every coding request, the router walks down that list. For each model, it
-tries each subscription-backed CLI that can serve it (highest free quota
-first). When subscriptions are exhausted, it falls through to metered API for
-the same model. Only when every route for the top model is dead does it drop
-to the next model.
-
-The point: if you pay for Claude Pro and ChatGPT Plus, you can burn through
-that flat-rate quota before any per-token API charges kick in — without
-manually switching tools when one rate-limits.
+The point: if you pay for Claude Pro AND have a Cursor Pro AND have an
+Anthropic API key for fallback, you burn through flat-rate quota first — no
+manual tool-switching when one rate-limits.
 
 ## What it gives you
 
-Four MCP tools that show up in any MCP-aware host (Claude Desktop, Cursor's
-agent panel, Claude Code, Codex desktop):
+**One MCP tool** that any MCP-aware host (Claude Desktop, Cursor, Claude Code,
+Codex) exposes:
 
-- **`code`** — main routing tool. Walks your model priority + tier list and
-  dispatches. Hints: `model` (bump a model to the front) or `service` (force a
-  specific CLI).
-- **`code_mixture`** — fan a prompt out to multiple services in parallel.
-  One result per service; you synthesise. Pick the candidate set with
-  `services: [...]` (named dispatchers) or `models: [...]` (canonical model
-  IDs — the router resolves each to a service, subscription preferred).
-  When neither is passed, falls back to `mixture_default` from `config.yaml`,
-  then to every available service.
-- **`dashboard`** — text status of every configured service: model, tier
-  (subscription / metered), quota left, breaker state, the router's current pick.
-- **`get_quota_status`** — JSON version of the dashboard, for tooling.
+- **`code`** — main routing tool.
+  - `mode: "single"` (default) — route once.
+  - `mode: "fanout"` — run the prompt against multiple routes in parallel
+    (one result per route; the caller synthesises).
+  - Hints in single mode: `hints.model` (bump a model to the front of
+    priority) or `hints.service` (force a specific dispatcher).
+  - Fanout axis: `models: [...]` (canonical model keys; each expands to ALL
+    its registered routes). Falls back to `mixture_default` from config,
+    then to every available route.
 
-Plus three prompts in the host's slash menu:
+**Two MCP resources** for inspectable state:
 
-| Prompt           | What it does                                                                          |
-| ---------------- | ------------------------------------------------------------------------------------- |
-| `route-task`     | Send a task through `code` with optional model override. The most common entry point. |
-| `compare-models` | Fan a task out via `code_mixture` to every available service for synthesis.           |
-| `health-check`   | Walk through `dashboard` + `get_quota_status` to diagnose routing problems.           |
+- **`harness-router://status`** — multi-line text dashboard.
+- **`harness-router://status.json`** — same data as JSON.
 
-Plus the operational machinery you'd want anyway:
+Plus the operational machinery:
 
+- **Multi-harness routes** — Claude Code AND Cursor AND opencode can all be
+  registered for `claude-opus-4-7`; the router falls through within the
+  same tier when the highest-quota route fails.
 - **Quota tracking** — reads rate-limit headers per dispatch, scores
-  availability per service, prefers higher-headroom routes.
-- **Circuit breaker** — services that rate-limit get pulled from rotation
+  availability, prefers higher-headroom routes.
+- **Circuit breaker** — rate-limited routes get pulled from rotation
   automatically; recovery is half-open + probed.
-- **Live dashboard** — `harness-router-mcp dashboard --watch` for a TTY view.
-- **Hot config reload** — edit `config.yaml` while the server runs; changes
-  apply between tool calls without a restart.
-- **OpenTelemetry** — optional OTLP export of dispatch / routing / MCP-tool spans.
+- **Cross-process shared state** — concurrent stdio servers (Claude Desktop +
+  Cursor + Codex on one machine) share quota counters via SQLite WAL — no
+  daemon needed.
+- **Live dashboard** — `harness-router dashboard --watch` for a TTY view.
+- **Hot config reload** — edit `config.yaml` while the server runs.
+- **OpenTelemetry** — optional OTLP export of dispatch / router / MCP-tool spans.
 
 ## Install
 
 ```bash
-# One-shot (recommended for Claude Desktop / Cursor configs)
-npx -y harness-router-mcp mcp
+# One-shot (what hosts launch as a subprocess)
+npx -y harness-router
 
-# Global
-npm install -g harness-router-mcp
-harness-router-mcp --help
+# Global, for the CLI
+npm install -g harness-router
+harness-router --help
 ```
 
-Requires **Node ≥ 20** and at least one installed CLI: `claude`, `codex`, `gemini`, Cursor's `agent`, `opencode`, `copilot` (GitHub Copilot CLI), or any third-party CLI you register via YAML.
+Requires **Node ≥ 20** and at least one installed CLI: `claude`, `codex`,
+`gemini`, Cursor's `agent`, `opencode`, `copilot`, or a third-party CLI
+registered via YAML.
 
 ## First-run setup
 
-The fast path:
-
 ```bash
-harness-router-mcp onboard
+harness-router onboard
 ```
 
-Interactive wizard. Walks you through:
+Interactive wizard. Walks through:
 
-1. **Detect** which AI CLIs are installed on your machine.
-2. **Pick the default model** — what `code` reaches for first when no override is passed.
-3. **Pick fallback models** — the rest of the priority list, used when the default is exhausted.
-4. **Add metered API fallback** _(optional)_ — when `ANTHROPIC_API_KEY` /
-   `OPENAI_API_KEY` / `GEMINI_API_KEY` is set, offers to add one
-   `tier: metered` service per (provider × matching priority model).
-   Subscriptions are still tried first; metered is the fallback. The api
-   key is written as `${VAR}` — env-interpolation, never the raw value.
-5. **Set the `code_mixture` default** _(optional)_ — pick which services
-   `code_mixture` fans out to by default when the agent doesn't pass
-   `services` or `models`.
-6. **Pick MCP hosts** to wire `harness-router` into (Claude Desktop / Claude Code / Cursor / Codex).
-7. **Writes** the config to `~/.harness-router/config.yaml` and runs the install step for each chosen host.
+1. **Detect** installed AI CLIs.
+2. **Pick models from OpenRouter's catalog** _(optional, falls through to
+   free-text on any failure)_.
+3. **Free-text additional models** — for local models or anything OpenRouter
+   missed.
+4. **Order the priority** — sequential picker.
+5. **Subscription harnesses per model** — multi-checkbox of detected CLIs.
+   Multiple harnesses serving one model is the common case.
+6. **Metered fallback** — when `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
+   `GEMINI_API_KEY` is set and the model name matches the provider regex,
+   offers a metered fallback service. API keys are written as `${VAR}` —
+   env-interpolation, never the raw value.
+7. **Mixture default** — which models `code mode:fanout` fans out to by
+   default.
+8. **MCP host install** — Claude Desktop / Code / Cursor / Codex auto-detected.
+9. **Confirm + write** to `~/.harness-router/config.yaml`.
 
-After it finishes, restart the host(s) to pick up the new MCP server. Run `harness-router-mcp doctor` to verify the underlying CLIs are authed and dispatching successfully.
+After: restart the host(s); run `harness-router doctor` (or
+`harness-router doctor --probe-routes` for the full per-route dispatch probe)
+to verify each CLI is authed and accepting the configured `--model` value.
 
-> Renames in v0.2.0: `init` → `doctor` (clearer intent — checks toolchain health, doesn't initialise anything new). `install --uninstall` → top-level `uninstall` command (separate verb, separate command).
+## Config file
 
-If you'd rather drive each step by hand:
-
-```bash
-# Wire harness-router-mcp into your MCP hosts (Claude Desktop, Claude Code, Cursor, Codex).
-# Detects which hosts are installed, edits each one's config in place,
-# skips anything not present. Idempotent.
-harness-router-mcp install
-
-# Verify the underlying CLIs (claude, codex, cursor, gemini, opencode, copilot)
-# are installed, authed, and dispatching successfully.
-harness-router-mcp doctor
-```
-
-`install` writes `harness-router` into the right MCP-server namespace of each detected host:
-
-| Host                                  | Config file                                                                                                                             | Mechanism                                        |
-| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| Claude Desktop                        | `%APPDATA%\Claude\claude_desktop_config.json` (Win) / `~/Library/Application Support/Claude/...` (mac) / `~/.config/Claude/...` (Linux) | JSON `mcpServers["harness-router"]`              |
-| Claude Code (CLI)                     | `~/.claude.json` (managed by `claude mcp add`)                                                                                          | invokes `claude mcp add --scope user --` for you |
-| Cursor IDE                            | `~/.cursor/mcp.json`                                                                                                                    | JSON `mcpServers["harness-router"]`              |
-| Codex (CLI + Desktop + IDE extension) | `~/.codex/config.toml` — all three Codex clients share this file per OpenAI's docs                                                      | TOML `[mcp_servers.harness-router]`              |
-
-Restart the host after install to pick up the new MCP server.
-
-Other `install` flags:
-
-| Flag            | Effect                                                                                                                                                      |
-| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--target <id>` | Limit to one host: `claude-desktop` / `claude-code` / `cursor` / `codex`.                                                                                   |
-| `--print`       | Print the config snippet for each host on stdout instead of writing files. Useful for hosts in non-default paths or for piping to a config-management tool. |
-| `--name <name>` | Override the entry name (default `harness-router`).                                                                                                         |
-
-To remove the entry: `harness-router-mcp uninstall` (same `--target` / `--name` flags apply).
-
-`init` still does what it always did:
-
-Per-harness checklist with three states (installed / verified / ready) and the exact next-step command for anything red. Runs a tiny ~5-token dispatch to verify each CLI's auth + JSON parsing actually works end-to-end.
-
-> **Inside an MCP host** (Claude Desktop, Cursor agent, etc.) the server logs a one-line startup banner to stderr summarising what it found — count of reachable services per tier, the active model priority, and a pointer back to `harness-router-mcp doctor` if nothing is reachable. Most MCP hosts surface stderr in their server logs (Claude Desktop: "View server logs"; Cursor: "MCP" panel), which is where to look when routing isn't doing what you expect.
-
-```text
-claude_code  Claude Code CLI
-  ✓ installed  v2.1.119
-  ✓ verified   "ok" in 5.3s
-  ─ ready
-
-codex        OpenAI Codex CLI
-  ✓ installed  v0.77.0  ⚠ latest 0.125.0
-  ✗ verified   AuthRequired: token not authorized
-  → upgrade (admin): npm install -g @openai/codex@latest
-  → auth: codex auth login
-```
-
-Flags:
-
-| Flag             | Effect                                                                                                                                                                |
-| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--install`      | Try `npm install -g <pkg>@latest` for any missing or upgradable harness. On Windows non-admin / Unix non-sudo, prints the elevation hint instead of failing opaquely. |
-| `--harness <id>` | Limit to one harness: `claude_code`, `codex`, `cursor`, `gemini_cli`, `opencode`, or `copilot` (or any third-party id you registered via YAML).                       |
-| `--no-verify`    | Skip the live ~5-token dispatch probe. Pure offline check.                                                                                                            |
-
-Exit code is `0` if every targeted harness is ready, `1` otherwise — pipe-friendly.
-
-## Authenticate the CLIs you want to use
-
-`init` will tell you which CLIs need auth. The commands:
-
-```bash
-claude auth login                    # Claude Code (Pro / Max)
-codex auth login                     # Codex CLI (ChatGPT Pro)
-gemini auth                          # Gemini CLI (or set GEMINI_API_KEY)
-opencode auth login                  # OpenCode — multiple providers per install
-copilot                              # First-run OAuth (no separate auth subcommand)
-# Cursor — sign in via the Cursor desktop app
-```
-
-> **Copilot CLI policy**: even after `gh auth login` succeeds, your org/subscription policy may block CLI use. If you see `Access denied by policy settings`, check https://github.com/settings/copilot. The router surfaces this clearly rather than as a generic auth error.
-
-> **OpenCode supports multiple subscriptions in one install** — Anthropic (Claude Pro/Max OAuth), OpenAI (ChatGPT subscription), Google, OpenRouter, and direct API keys. Useful for mixing subscription-billed and API-billed access in the same harness.
-
-## Trust model
-
-The router runs each underlying CLI in its **non-interactive / max-permission mode**: `--full-auto` for Codex, `--trust` for Cursor, broad `--allowedTools` for Claude Code, `run` (positional prompt) for OpenCode. The dispatched CLI can read, write, and execute anything in the workspace it's pointed at. **Treat dispatched tasks as you would any agentic CLI run by a colleague:** keep them out of repos with secrets you don't want exfiltrated, and prefer running them in a clean directory or container if the codebase is sensitive.
-
-The router does **not** add isolation beyond what each CLI provides — sandboxing belongs at the OS / container layer (Docker, Codespaces, Vercel Sandbox, Firecracker microVMs), not in a meta-router. If you need stronger guarantees, run `harness-router-mcp` itself inside an ephemeral environment.
-
-### `generic_cli` extensibility — trust the config
-
-`type: generic_cli` lets you add any CLI from YAML alone. Anyone who can edit your `config.yaml` can make the router execute any binary on `PATH`. Treat the file as you would `~/.bashrc`: restrict its filesystem permissions, don't load configs from untrusted sources, and review diffs on shared/team configs the same way you review shell scripts.
-
-### HTTP transport — no built-in auth
-
-`harness-router-mcp mcp --http` (or `startMcpHttpServer()` programmatically) speaks Streamable-HTTP MCP **without authentication**. Bind to loopback (the default) for desktop-host integration. For remote use, place a reverse proxy with auth in front (Tailscale, Cloudflare Tunnel, nginx + basic auth, etc.) — the router will not validate credentials itself. Session IDs are UUIDv4 (128-bit entropy), so they aren't guessable, but a bare-internet endpoint without a proxy IS world-callable.
-
-## Configure
-
-Zero-config mode works out of the box: at startup, the server probes your `PATH` for `claude`, `codex`, `gemini`, and `agent` and uses sensible defaults for each one it finds.
-
-For anything beyond defaults, create `config.yaml` and either pass it via `--config`, set `HARNESS_ROUTER_CONFIG=/path/to/config.yaml`, or place it in the project root:
+`~/.harness-router/config.yaml` is model-keyed:
 
 ```yaml
-# Minimal — supply a Gemini API key
-gemini_api_key: ${GEMINI_API_KEY}
-
-# Skip a CLI even if installed
-disabled: [cursor]
-
-# Tweak auto-detected defaults
-overrides:
-  claude_code:
-    weight: 1.2
-  gemini_cli:
-    thinking_level: medium
-
-# Add local / third-party endpoints
-endpoints:
-  - name: ollama
-    base_url: http://localhost:11434/v1
-    model: llama3.2
-    tier: 3
+priority:
+  - claude-opus-4-7
+  - gpt-5.4
+  - gemini-2.5-pro
+mixture_default: [claude-opus-4-7, gpt-5.4]
+models:
+  claude-opus-4-7:
+    subscription: # single-route shorthand
+      harness: claude_code
+      command: claude
+    metered:
+      base_url: https://api.anthropic.com/v1
+      api_key: ${ANTHROPIC_API_KEY}
+  gpt-5.4:
+    subscription:
+      harness: cursor
+      command: agent
+  gemini-2.5-pro:
+    metered:
+      base_url: https://generativelanguage.googleapis.com/v1beta/openai
+      api_key: ${GEMINI_API_KEY}
 ```
 
-Full schema (custom models per service, multiple entries per harness, per-task capability scores, model escalation) lives in [`config.example.yaml`](config.example.yaml).
-
-## Use with Claude Desktop / Cursor
-
-Add to `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\`):
-
-```json
-{
-  "mcpServers": {
-    "harness-router": {
-      "command": "npx",
-      "args": ["-y", "harness-router-mcp", "mcp"],
-      "env": {
-        "HARNESS_ROUTER_CONFIG": "/path/to/config.yaml",
-        "GEMINI_API_KEY": "your-gemini-api-key-here"
-      }
-    }
-  }
-}
-```
-
-Restart Claude Desktop. The four MCP tools (`code`, `code_mixture`, `dashboard`, `get_quota_status`) become available in the chat.
-
-## How routing actually works
-
-The algorithm is short. Walk the user's `model_priority` list. For each model:
-
-1. Find every enabled service whose `model:` matches and whose dispatcher is
-   reachable + breaker-closed.
-2. Split those candidates into `subscription` and `metered` tiers (by the
-   service's `tier:` field).
-3. Try subscription routes first, in quota-descending order. If one rate-limits,
-   skip to the next. When all subscription routes are exhausted, fall through
-   to metered.
-4. When every route for the current model has failed, drop to the next model.
-
-That's the whole thing. No quality scores, no per-harness multipliers — those
-were vibes. The data the router actually has is "is this CLI installed",
-"is its breaker closed", and "what's its quota score".
-
-## Adding a service
+For a model served by **multiple harnesses**, use the array form:
 
 ```yaml
-# Subscription-backed: routes through this CLI count as zero marginal cost.
-claude_code_opus:
-  enabled: true
-  harness: claude_code
-  command: claude
-  model: claude-opus-4.7 # canonical name (matches model_priority entries)
-  cli_model: opus # what `claude --model` actually accepts
-  tier: subscription
-
-# Metered API: only used when subscription routes for the same model are exhausted.
-anthropic_api:
-  enabled: true
-  type: openai_compatible
-  base_url: https://api.anthropic.com/v1
-  model: claude-opus-4.7 # same canonical name → both routes serve the same model
-  cli_model: claude-opus-4-20250101 # what the API expects
-  api_key: ${ANTHROPIC_API_KEY}
-  tier: metered
+models:
+  claude-opus-4-7:
+    subscription: # array form
+      - harness: claude_code
+        command: claude
+      - harness: cursor
+        command: agent
+      - harness: opencode
+        command: opencode
+    metered:
+      - base_url: https://api.anthropic.com/v1
+        api_key: ${ANTHROPIC_API_KEY}
+      - base_url: http://localhost:11434/v1
+        api_key: ollama # local relay as third fallback
 ```
 
-### Two model names per service?
+Both shapes work — the loader normalises to array internally.
 
-`model:` is the canonical ID — used by the router to match services against
-`model_priority` entries. Pick whatever convention you want (semantic versions,
-date-suffixed IDs, aliases), just keep it consistent across `model_priority`
-and every service's `model:` field.
-
-`cli_model:` is what gets passed to the underlying CLI's `--model` flag at
-dispatch time. Use it when the canonical name you want for routing differs
-from what the CLI accepts. When omitted, falls back to `model`.
-
-This is the join that lets two different CLIs serve "the same model" with
-different name conventions. Claude Code's CLI calls Opus `opus`; Cursor's
-agent might call it `claude-3-opus-thinking-max`; the Anthropic API wants the
-full versioned ID. They're all the same model from the router's perspective —
-it walks `model_priority`, finds every service whose `model:` matches, and
-hands each one its own `cli_model:` at dispatch time.
-
-OpenAI-compatible endpoints (Ollama, LM Studio, OpenRouter, raw OpenAI/Anthropic
-APIs) work the same way — they default to `tier: metered` since that's how
-they bill.
-
-### Per-CLI model name conventions
-
-Each CLI accepts its own naming style for `--model`. The router doesn't
-translate; whatever you put in `model:` (or `cli_model:`) is what the CLI
-sees. Reference for the six built-in harnesses, current as of May 2026:
-
-| CLI              | Aliases                                                  | Concrete IDs (examples)                                                           | Notes                                                                                    |
-| ---------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `claude`         | `default`, `best`, `sonnet`, `opus`, `haiku`, `opusplan` | `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5` (dashes, no dots)      | Aliases roll forward to latest. Append `[1m]` for 1M context.                            |
-| `codex`          | _(none)_                                                 | `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`      | Dots in versions. `gpt-5.5` only on ChatGPT auth, not API auth.                          |
-| `gemini`         | `auto`, `pro`, `flash`, `flash-lite`                     | `gemini-2.5-pro`, `gemini-3-pro-preview`, `gemini-2.5-flash`                      | Aliases preferred — auto-roll. Preview models gated behind a flag.                       |
-| `agent` (Cursor) | `Auto`                                                   | `Composer 2`, `Opus 4.6`, `Codex 5.3 High Fast`, `Gemini 3 Pro`, `Grok`           | Descriptive names (mixed casing). Run `agent models` to list what's available.           |
-| `opencode`       | _(none)_                                                 | `anthropic/claude-sonnet-4-20250514`, `openai/gpt-5`, `lmstudio/<provider/model>` | Format is always `provider_id/model_id`. Run `opencode /models` to enumerate.            |
-| `copilot`        | `auto`                                                   | `claude-sonnet-4.5`, `gpt-5.4`, `gpt-5.3-codex`                                   | Subject to subscription policy. Run `/model` interactively to see what your seat allows. |
-
-Built-in defaults pick aliases over fully-versioned IDs where the CLI
-supports them, so they keep working as the providers ship new versions.
-Override per service when you want to pin to a specific version.
-
-### Adding a third-party CLI without writing code
-
-Any headless coding CLI that takes a prompt argument and writes the agent's
-reply to stdout can be plugged into the router from YAML alone — no
-TypeScript dispatcher required. **The minimum viable entry is two lines:**
+Optional `http:` block for the HTTP transport:
 
 ```yaml
-services:
-  my_custom_cli:
-    command: my-cli
+http:
+  bind: 127.0.0.1
+  port: 8765
+  auth:
+    required: false # auto-forced true when bind is non-loopback
 ```
-
-That's it. The router auto-promotes any service with `command:` and an
-unknown harness to `GenericCliDispatcher`, which runs `<command> "<prompt>"`
-and treats stdout as the response. Route via
-`code({ prompt, hints: { service: "my_custom_cli" } })` to force it, or just
-include it in the priority list and the router will pick it when its model
-comes up.
-
-For non-trivial CLIs (different prompt-delivery, file flags, JSON output
-parsing, env vars) extend the recipe — `type: generic_cli` is optional but
-makes the intent explicit:
-
-```yaml
-my_custom_cli:
-  enabled: true
-  type: generic_cli
-  harness:
-    my_custom_cli # used as the harness id; route via
-    # used as the harness id; route via the model priority list
-  command: my-cli # bare name; resolved via `which`
-  tier: 2
-  tier: subscription
-
-  # Argv assembly:
-  #   [...args_before_prompt, ?--model <m>, ?--workdir <dir>,
-  #    <prompt slot>, ...args_after_prompt]
-  # Flags only appear when their value is present.
-  args_before_prompt: [run, --no-color]
-  model_flag: --model
-  cwd_flag: --workdir
-  forward_env: [MY_CLI_API_KEY]
-
-  # Prompt delivery — three modes:
-  #   positional (default): prompt is a positional argv entry
-  #   flag:                 prompt is [prompt_flag, <text>] AFTER model/cwd
-  #   stdin:                prompt is fed on the child's stdin
-  prompt_delivery: positional # or "flag" / "stdin"
-  # prompt_flag: --prompt          # required when prompt_delivery: flag
-
-  # Optional: extract the response text from a JSON envelope.
-  # Falls back to plain stdout if parsing fails.
-  output_json_path:
-    result # supports nested paths e.g.
-    #   choices.0.message.content
-  tokens_json_path:
-    usage # accepts {input,output},
-    #   {input_tokens,output_tokens},
-    #   {prompt_tokens,completion_tokens}
-
-  model: my-cli-default-model
-```
-
-What you get for free:
-
-- **Routing**: include the service in your `model_priority` (declare the
-  service's `model:`). Or force it via
-  `code({ prompt, hints: { service: "my_custom_cli" } })`.
-- Quota / circuit-breaker integration with rate-limit detection on stderr
-- Onboarding probe (`init`) with the same install/verify/ready flow as
-  built-in harnesses
-- Hot config reload — change the recipe and the router picks it up
-  for routing decisions (between tool calls, no restart)
-
-When to write a real dispatcher instead: if your CLI emits live tool-use
-or thinking events you want to stream mid-run, or if it needs per-call
-config-file mutations. The generic dispatcher treats the CLI as a black
-box: argv in, plain stdout (or stdin/flag-fed prompt) out. That's enough
-for most third-party tools.
 
 ## CLI
 
 ```bash
-harness-router-mcp doctor                   # onboarding stack check (installed / verified / ready)
-harness-router-mcp doctor --install         # auto-run npm install -g for missing or upgradable harnesses
-harness-router-mcp mcp                    # MCP server on stdio
-harness-router-mcp mcp --http 7330        # MCP server over streamable HTTP
-harness-router-mcp route "<prompt>"       # one-shot dispatch with live streaming
-harness-router-mcp list-services          # show enabled services (model + tier)
-harness-router-mcp dashboard              # model priority / quota / breaker snapshot
-harness-router-mcp dashboard --watch      # re-render every --interval ms
+# Bare invocation = stdio MCP server (what hosts launch)
+harness-router
+
+# HTTP transport
+harness-router serve --http 8765 --bind 127.0.0.1
+harness-router serve --bind 0.0.0.0           # auto-creates bearer token
+
+# HTTP auth tokens
+harness-router auth                            # show token + path + perms warning
+harness-router auth rotate                     # replace with a fresh token
+
+# Day-to-day
+harness-router doctor                          # is each CLI installed/authed?
+harness-router doctor --probe-routes           # also dispatch a 5-token probe per route
+harness-router dashboard                       # one-shot text view
+harness-router dashboard --watch               # live TTY redraw
+harness-router install                         # wire into MCP hosts (idempotent)
+harness-router uninstall                       # reverse it
+harness-router onboard                         # interactive setup
 ```
 
-## Observability
+## Routing model
 
-Set `OTEL_EXPORTER_OTLP_ENDPOINT` to send spans to any OTLP collector (Honeycomb, Datadog, Jaeger, Tempo, …). Three span types:
+When the agent calls `code({prompt: "…"})`:
 
-- `harness-router-mcp.dispatcher.{dispatch,stream}` — per-CLI invocation, tagged with harness/model/tokens.
-- `harness-router-mcp.router.{route,pick_service,route_to,stream}` — routing decisions.
-- `harness-router-mcp.mcp.tool` — per MCP tool invocation.
+1. Walk `priority`. For each model:
+   - Try every `subscription`-tier route, **highest quota score first**
+     (declared array order is the tiebreak).
+   - When subscription is exhausted, try `metered` routes the same way.
+2. Tripped breakers and unavailable dispatchers are skipped silently.
+3. Rate-limit on a route → trip its breaker, exclude for the rest of this
+   dispatch, fall through to the next route. **The agent gets a successful
+   response from a different route**, not an error.
+4. Response carries `routing: {model, tier, quotaScore, reason}` so the agent
+   sees what fired.
 
-Disable entirely with `OTEL_SDK_DISABLED=true`.
+Internally, each route in the YAML becomes one synthetic service id of the
+form `${model}::${routeKey}` (e.g. `claude-opus-4-7::claude_code`,
+`claude-opus-4-7::api.anthropic.com`). These are debuggable internal
+handles — they show up in the dashboard, breaker errors, and OTel spans.
+Users never write them.
 
-## Development
+## HTTP auth
 
-```bash
-npm ci
-npm run typecheck
-npm test            # 227 vitest cases (includes prompt + tool round-trips)
-npm run build
-npm run smoke       # spawns dist/bin.js and runs a real JSON-RPC handshake
-node dist/bin.js --help
-```
+- **Default bind**: `127.0.0.1:8765`.
+- **Loopback bypass**: connections from `127.x` / `::1` / `::ffff:127.0.0.1`
+  bypass the bearer-token check unless you pass `--require-auth`. The OS
+  process boundary IS the auth there.
+- **Non-loopback bind**: force-enables auth, auto-creates
+  `~/.harness-router/auth.token` (chmod 600) on first start, prints the
+  path to stderr.
+- **401 response**: `WWW-Authenticate: Bearer realm="harness-router"`.
+- **Constant-time comparison** via `crypto.timingSafeEqual` (length-mismatch
+  short-circuited before the compare to avoid Buffer-construction timing
+  leaks).
+
+## Cross-process shared state
+
+Every stdio/HTTP server opens the same SQLite database at
+`~/.harness-router/state.db` in WAL mode. Quota counters use additive
+UPSERTs, so concurrent processes accumulate cleanly:
+
+- Three stdio servers (Claude Desktop + Cursor + Codex) all see the same
+  total `local_calls` for a given route.
+- No daemon, no IPC, no lifecycle.
+- `sqlite3 state.db .dump` is a valid debugging tool.
+
+## Compatibility
+
+- v0.2 configs are NOT migrated. The loader rejects them with a
+  `ConfigError` pointing at `harness-router onboard`.
+- The npm package renamed from `harness-router-mcp` to `harness-router` at
+  v0.3.0. The old name is unpublished going forward.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT

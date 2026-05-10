@@ -17,7 +17,7 @@ import {
   renderReport,
   type HarnessId,
   type OnboardHooks,
-} from "../src/onboarding.js";
+} from "../src/harnesses.js";
 
 // ---------------------------------------------------------------------------
 // Hook builders

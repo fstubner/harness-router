@@ -10,7 +10,7 @@
 import { parseArgs } from "node:util";
 import { Router } from "./router.js";
 import { VERSION } from "./version.js";
-import { loadConfig } from "./config.js";
+import { loadConfig } from "./config/index.js";
 import { QuotaCache } from "./quota.js";
 import { buildDispatchers } from "./mcp/dispatcher-factory.js";
 import { startMcpHttpServer, startMcpServer } from "./mcp/server.js";
@@ -20,9 +20,10 @@ import {
   HARNESS_SPECS,
   onboard,
   renderReport,
+  verifyAllRoutes,
   type HarnessId,
   type OnboardOptions,
-} from "./onboarding.js";
+} from "./harnesses.js";
 import {
   INSTALL_TARGETS,
   defaultEntry,
@@ -216,6 +217,7 @@ async function cmdDoctor(
   installFlag: boolean,
   noVerify: boolean,
   harnessFilter: HarnessId | undefined,
+  probeRoutes: boolean,
 ): Promise<number> {
   const opts: OnboardOptions = {
     install: installFlag,
@@ -227,6 +229,32 @@ async function cmdDoctor(
   const reports = await onboard(opts);
   const colors = Boolean(process.stdout.isTTY);
   process.stdout.write(renderReport(reports, colors) + "\n");
+
+  // --probe-routes: dispatch a tiny prompt against every (harness, model)
+  // route in the user's config. The harness-level verify above already
+  // probes ONE service per harness; this catches "model rejected by CLI"
+  // for the additional routes that share a harness.
+  if (probeRoutes) {
+    process.stdout.write("\n  Probing every configured route…\n\n");
+    const results = await verifyAllRoutes(configPath);
+    if (results.length === 0) {
+      process.stdout.write("  (no enabled routes in config)\n");
+    } else {
+      for (const r of results) {
+        const tag = r.ok ? "✓" : "✗";
+        const ms = `${r.durationMs}ms`;
+        const where = r.baseUrl ?? r.harness;
+        process.stdout.write(
+          `  [${tag}] ${r.serviceId.padEnd(40)} model=${r.model} via=${where} ${ms}\n`,
+        );
+        if (!r.ok && r.error) {
+          process.stdout.write(`      → ${r.error}\n`);
+        }
+      }
+    }
+    const allOk = results.every((r) => r.ok);
+    return reports.every((r) => r.ready) && allOk ? 0 : 1;
+  }
 
   // Exit 0 if every targeted harness is ready, 1 otherwise — useful for
   // shell scripts ("&& open editor", etc.).
@@ -411,6 +439,7 @@ function printUsage(): void {
       "  harness-router doctor --install         Try `npm install -g` for any missing/upgradable harness.",
       "  harness-router doctor --harness <id>    Limit to one harness.",
       "  harness-router doctor --no-verify       Skip the live ~5-token dispatch probe.",
+      "  harness-router doctor --probe-routes    Live-probe EVERY (harness, model) route in the config.",
       "  harness-router install                  Detect MCP hosts and add `harness-router` entry to each.",
       "  harness-router install --target <id>    Install into one host only.",
       "  harness-router install --print          Print the config snippet for each host (no file writes).",
@@ -451,6 +480,7 @@ export async function main(argv: string[]): Promise<number> {
       "skip-install": { type: "boolean" },
       bind: { type: "string" },
       "require-auth": { type: "boolean" },
+      "probe-routes": { type: "boolean" },
     },
     allowPositionals: true,
     strict: false,
@@ -509,7 +539,8 @@ export async function main(argv: string[]): Promise<number> {
         }
         harnessFilter = harnessArg;
       }
-      return cmdDoctor(configPath, installFlag, noVerify, harnessFilter);
+      const probeRoutes = Boolean(values["probe-routes"]);
+      return cmdDoctor(configPath, installFlag, noVerify, harnessFilter, probeRoutes);
     }
     case "install": {
       const opts: InstallCmdOpts = {};

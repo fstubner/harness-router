@@ -8,7 +8,17 @@ export { Router } from "./router.js";
 export type { RouterStreamEvent } from "./router.js";
 export { CircuitBreaker } from "./circuit-breaker.js";
 export { QuotaCache, QuotaState } from "./quota.js";
-export { loadConfig, watchConfig } from "./config.js";
+export {
+  loadConfig,
+  watchConfig,
+  ConfigMissingError,
+  ConfigError,
+  type Config,
+  type ModelEntry,
+  type SubscriptionRoute,
+  type MeteredRoute,
+  type HttpConfig,
+} from "./config/index.js";
 export * from "./types.js";
 export type { Dispatcher, DispatchOpts } from "./dispatchers/base.js";
 export { BaseDispatcher, drainDispatcherStream } from "./dispatchers/base.js";

@@ -1,24 +1,21 @@
 /**
- * v0.3 config schema — model-keyed.
+ * Config schema — model-keyed.
  *
- * The big shift from v0.2: services are no longer the primary key. Models are.
- * A model entry has up to two routes (subscription tier and metered tier);
- * the router walks `priority`, asks each entry which routes are usable, and
- * picks the best one.
+ * Models are the primary key, not services. Each model entry has up to two
+ * tiers of routes (subscription, metered) and the router walks `priority`,
+ * picking the best usable route per dispatch.
  *
  * Why this matters:
  *   - The user thinks "I want opus, falling back to gpt-5.4" — model names,
  *     not service names.
- *   - `mixture_default` becomes `[opus, gpt-5.4]` instead of
- *     `[claude_code, anthropic_api_opus]`.
- *   - The `tier` field disappears — it's structural now (which key the route
- *     lives under).
+ *   - `mixture_default` is `[opus, gpt-5.4]`, not `[claude_code, anthropic_api_opus]`.
  *   - There are no auto-generated service names like `anthropic_api_opus`.
  *
- * The internal `RouterConfig` (v0.2 shape) is still produced by an adapter so
- * the router/dispatchers/quota layer can keep working unchanged. The adapter
- * derives synthetic service ids of the form `${model}::${tier}` only as
- * internal handles — they never appear in user-facing YAML.
+ * The internal `RouterConfig` (in `src/types.ts`) is produced by an adapter
+ * (`./adapter.ts`) so the router/dispatchers/quota layer keeps working
+ * uniformly. The adapter derives synthetic service ids of the form
+ * `${model}::${routeKey}` only as internal handles — they never appear in
+ * user-facing YAML.
  */
 
 import type { GenericCliRecipe } from "../types.js";
@@ -35,12 +32,12 @@ import type { GenericCliRecipe } from "../types.js";
  * cursor, gemini_cli, opencode, copilot) OR is a free-form string when paired
  * with a `generic_cli` recipe (extension point for third-party CLIs).
  *
- * `cli_model_override` is rare — only set when the canonical model name in
- * the parent entry's key differs from what the CLI accepts via `--model`.
- * In v0.3 we strongly recommend using pinned IDs everywhere (e.g.
- * `claude-opus-4-7` not `opus`) so this stays unset in the common case.
+ * `cli_model_override` is the rare escape hatch — only set when the
+ * canonical model name in the parent entry's key differs from what the CLI
+ * accepts via `--model`. We strongly recommend using pinned IDs everywhere
+ * (e.g. `claude-opus-4-7` not `opus`) so this stays unset in the common case.
  */
-export interface V3SubscriptionRoute {
+export interface SubscriptionRoute {
   harness: string;
   /** Override what's passed to `--model`. Defaults to the parent model key. */
   cli_model_override?: string;
@@ -60,7 +57,7 @@ export interface V3SubscriptionRoute {
  * `api_key` is typically `${ENV_VAR}` — the loader resolves it at startup.
  * Never write a literal key into config.yaml; the wizard never does.
  */
-export interface V3MeteredRoute {
+export interface MeteredRoute {
   base_url: string;
   api_key?: string;
   /** Override the model id sent to the endpoint. Defaults to parent key. */
@@ -77,9 +74,9 @@ export interface V3MeteredRoute {
  * the highest-quota usable one per dispatch (with the rest as automatic
  * fallbacks).
  *
- * The same is true for metered: a user might wire up both Anthropic's
- * direct API and a self-hosted relay that also speaks Claude — different
- * `base_url`s, same model, both useful as fallbacks.
+ * Same applies to metered: a user might wire both Anthropic's direct API
+ * and a self-hosted relay that speaks Claude — different `base_url`s,
+ * same model, both useful as fallbacks.
  *
  * Both `subscription` and `metered` are arrays of routes. The YAML loader
  * accepts a single-route shorthand for the common case (one object instead
@@ -87,9 +84,9 @@ export interface V3MeteredRoute {
  *
  * A model with neither route is invalid — the loader rejects it.
  */
-export interface V3ModelEntry {
-  subscription?: readonly V3SubscriptionRoute[];
-  metered?: readonly V3MeteredRoute[];
+export interface ModelEntry {
+  subscription?: readonly SubscriptionRoute[];
+  metered?: readonly MeteredRoute[];
 }
 
 /**
@@ -106,14 +103,14 @@ export interface V3ModelEntry {
  * is exposed. When `http.bind` is non-loopback, `http.auth.required` is
  * forced true regardless of the user's setting.
  */
-export interface V3Config {
+export interface Config {
   priority: readonly string[];
-  models: Readonly<Record<string, V3ModelEntry>>;
+  models: Readonly<Record<string, ModelEntry>>;
   mixture_default?: readonly string[];
-  http?: V3HttpConfig;
+  http?: HttpConfig;
 }
 
-export interface V3HttpConfig {
+export interface HttpConfig {
   /** Address to bind. Defaults to "127.0.0.1". */
   bind?: string;
   /** Port. Defaults to 8765. */
@@ -131,21 +128,21 @@ export interface V3HttpConfig {
 // ---------------------------------------------------------------------------
 
 /**
- * Errors collected during config validation. The loader collects all errors
+ * Errors collected during config validation. The parser collects all errors
  * before throwing so the user sees every problem in one shot, not one at a
  * time as they fix and re-run.
  */
-export class V3ConfigError extends Error {
+export class ConfigError extends Error {
   constructor(
     message: string,
-    public readonly issues: readonly V3Issue[],
+    public readonly issues: readonly ConfigIssue[],
   ) {
     super(message);
-    this.name = "V3ConfigError";
+    this.name = "ConfigError";
   }
 }
 
-export interface V3Issue {
+export interface ConfigIssue {
   /** Dotted path into the config: `models.opus.subscription.harness`. */
   path: string;
   message: string;

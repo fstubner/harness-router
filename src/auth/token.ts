@@ -11,7 +11,7 @@
  *   - Loopback connections bypass auth (the OS process boundary is the
  *     real boundary there).
  *   - Non-loopback connections REQUIRE auth. The HTTP loader force-enables
- *     this regardless of config (see src/v3/loader.ts parseHttp).
+ *     this regardless of config (see src/config/parser.ts parseHttp).
  *   - Token is 32 random bytes base64url-encoded (~43 chars, 256 bits).
  *   - We never log the token. Errors are generic 401s, not "wrong token".
  *
