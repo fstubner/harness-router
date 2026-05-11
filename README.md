@@ -4,7 +4,7 @@
 > An MCP server that routes coding tasks model-first across whatever CLIs you have installed. Subscription-backed CLIs (Claude Code, Cursor, Codex, Copilot CLI, opencode) are tried first; metered API is the fallback.
 
 [![npm version](https://img.shields.io/npm/v/harness-router.svg)](https://www.npmjs.com/package/harness-router)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -67,7 +67,7 @@ npm install -g harness-router
 harness-router --help
 ```
 
-Requires **Node ≥ 20** and at least one installed CLI: `claude`, `codex`,
+Requires **Node >= 22** and at least one installed CLI: `claude`, `codex`,
 `gemini`, Cursor's `agent`, `opencode`, `copilot`, or a third-party CLI
 registered via YAML.
 
