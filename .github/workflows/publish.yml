@@ -51,7 +51,20 @@ jobs:
       - name: Install
         run: npm ci
 
+      - name: Check npm package version
+        id: npm-registry
+        run: |
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          VERSION="${GITHUB_REF_NAME#v}"
+          if npm view "$PACKAGE_NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "$PACKAGE_NAME@$VERSION already exists on npm; skipping publish."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set version from tag
+        if: steps.npm-registry.outputs.exists != 'true'
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           # --allow-same-version makes this idempotent when package.json
@@ -59,9 +72,11 @@ jobs:
           npm version "$VERSION" --no-git-tag-version --allow-same-version
 
       - name: Build
+        if: steps.npm-registry.outputs.exists != 'true'
         run: npm run build
 
       - name: Publish
+        if: steps.npm-registry.outputs.exists != 'true'
         run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
