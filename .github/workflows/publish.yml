@@ -10,6 +10,9 @@ permissions:
   contents: read
   id-token: write # for npm provenance
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   test:
     name: Test
