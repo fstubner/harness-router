@@ -3,77 +3,143 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Harness Router — use your AI subscriptions before metered API</title>
-<meta name="description" content="An MCP server that routes coding tasks model-first across whatever AI CLIs you have installed. Subscription-backed CLIs (Claude Code, Cursor, Codex, Copilot CLI, opencode) are tried first; metered API is the fallback." />
+<title>Harness Router - MCP router for AI coding agents</title>
+<meta name="description" content="Harness Router is a local MCP server that routes coding tasks across Claude Code, Codex, Cursor, Gemini CLI, opencode, Copilot CLI, and metered API fallbacks." />
+<meta name="keywords" content="MCP router, model context protocol, AI coding agent router, Claude Code, Codex CLI, Cursor agent, Gemini CLI, opencode, Copilot CLI, AI coding tools, subscription quota, metered API fallback" />
+<meta name="author" content="Felix Stubner" />
 <meta name="theme-color" content="#0e0f12" />
+<link rel="canonical" href="https://fstubner.github.io/harness-router-mcp/" />
 
-<meta property="og:title" content="Harness Router" />
-<meta property="og:description" content="Use your AI subscriptions before paying for metered API. An MCP server that walks a model priority list and routes through whichever CLI has free quota left." />
+<meta property="og:title" content="Harness Router - MCP router for AI coding agents" />
+<meta property="og:description" content="Route coding tasks through the best available AI coding agent, subscription account, or API fallback." />
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://fstubner.github.io/harness-router-mcp/" />
-<meta name="twitter:card" content="summary_large_image" />
+<meta property="og:site_name" content="Harness Router" />
+<meta name="twitter:card" content="summary" />
+<meta name="twitter:title" content="Harness Router - MCP router for AI coding agents" />
+<meta name="twitter:description" content="A local MCP router for Claude Code, Codex, Cursor, Gemini CLI, opencode, Copilot CLI, and API fallback routes." />
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      "name": "Harness Router",
+      "applicationCategory": "DeveloperApplication",
+      "operatingSystem": "Windows, macOS, Linux",
+      "softwareVersion": "0.3.0",
+      "programmingLanguage": "TypeScript",
+      "license": "https://opensource.org/licenses/MIT",
+      "url": "https://fstubner.github.io/harness-router-mcp/",
+      "codeRepository": "https://github.com/fstubner/harness-router-mcp",
+      "downloadUrl": "https://www.npmjs.com/package/harness-router",
+      "description": "Harness Router is a local MCP server that routes coding tasks across AI coding agents, subscription-backed CLIs, and metered API fallbacks.",
+      "author": {
+        "@type": "Person",
+        "name": "Felix Stubner",
+        "url": "https://github.com/fstubner"
+      },
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+    },
+    {
+      "@type": "FAQPage",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "Is Harness Router an AI coding agent?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "No. Harness Router is a local MCP router. It delegates coding work to tools such as Claude Code, Codex, Cursor, Gemini CLI, opencode, Copilot CLI, and API-compatible model routes."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How is Harness Router different from opencode?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "opencode is a coding agent you use directly. Harness Router sits above coding agents and decides which route should handle a task based on model priority, subscription availability, quota, circuit breaker state, and metered fallback."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Does Harness Router send code to a hosted service?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "No hosted Harness Router service is required. It runs locally as an MCP server and dispatches only to the CLIs or APIs you configure."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Which tools can Harness Router route to?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Harness Router can route to Claude Code, Codex, Cursor agent, Gemini CLI, opencode, GitHub Copilot CLI, generic CLI routes, and OpenAI-compatible API endpoints."
+          }
+        }
+      ]
+    }
+  ]
+}
+</script>
 
 <style>
   :root {
     --bg: #0e0f12;
-    --bg-elev: #15171c;
-    --bg-code: #14161a;
-    --border: #25272d;
-    --border-soft: #1d1f25;
+    --panel: #15171c;
+    --panel-strong: #111318;
+    --code: #121419;
+    --line: #25272d;
+    --line-soft: #1d1f25;
     --text: #ecebe8;
-    --text-soft: #b8b6b1;
-    --text-muted: #8a8985;
+    --muted: #b8b6b1;
+    --dim: #8a8985;
     --accent: #d4926b;
     --accent-soft: rgba(212, 146, 107, 0.12);
-    --accent-line: rgba(212, 146, 107, 0.4);
+    --accent-line: rgba(212, 146, 107, 0.38);
     --green: #95b884;
-    --red: #c97c7c;
-    --serif: ui-serif, Iowan, Georgia, Cambria, "Times New Roman", Times, serif;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     --mono: ui-monospace, "SF Mono", Menlo, Monaco, "Cascadia Mono", "Roboto Mono", Consolas, "Liberation Mono", monospace;
+    --serif: ui-serif, Iowan, Georgia, Cambria, "Times New Roman", Times, serif;
   }
 
   * { box-sizing: border-box; }
-  html { background: var(--bg); }
+  html { background: var(--bg); scroll-behavior: smooth; }
   body {
     margin: 0;
-    font-family: var(--sans);
-    color: var(--text);
     background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
-  ::selection { background: var(--accent-soft); color: var(--accent); }
-
   a {
     color: var(--accent);
     text-decoration: none;
     border-bottom: 1px solid var(--accent-line);
-    transition: border-color 0.15s ease;
   }
   a:hover { border-bottom-color: var(--accent); }
-
-  code, kbd {
+  code {
     font-family: var(--mono);
-    font-size: 0.92em;
-    background: var(--bg-code);
-    border: 1px solid var(--border-soft);
+    font-size: 0.9em;
+    background: var(--code);
+    border: 1px solid var(--line-soft);
     border-radius: 4px;
-    padding: 0.08em 0.4em;
-    color: var(--text-soft);
+    padding: 0.08em 0.35em;
+    color: var(--muted);
   }
   pre {
-    font-family: var(--mono);
-    font-size: 0.88rem;
-    background: var(--bg-code);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 1rem 1.25rem;
+    margin: 0;
+    padding: 1rem 1.1rem;
     overflow-x: auto;
-    line-height: 1.6;
-    color: var(--text-soft);
-    margin: 1rem 0;
+    color: var(--muted);
+    background: var(--code);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    line-height: 1.65;
   }
   pre code {
     background: transparent;
@@ -81,441 +147,675 @@
     padding: 0;
     font-size: inherit;
   }
-  .comment { color: var(--text-muted); font-style: italic; }
+  .comment { color: var(--dim); font-style: italic; }
   .kw { color: var(--accent); }
   .str { color: var(--green); }
 
-  /* ─────────────────── layout ─────────────────── */
   .page {
-    max-width: 760px;
+    max-width: 1040px;
     margin: 0 auto;
-    padding: 2rem 1.5rem 6rem;
+    padding: 0 1.5rem 5rem;
   }
-
-  header.top {
+  .top {
+    position: sticky;
+    top: 0;
+    z-index: 5;
     display: flex;
-    align-items: center;
     justify-content: space-between;
-    padding: 0.5rem 0 4rem;
-    font-size: 0.85rem;
-    color: var(--text-muted);
+    align-items: center;
+    gap: 1.5rem;
+    padding: 1rem 0;
+    background: rgba(14, 15, 18, 0.88);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
   }
-  header.top .brand {
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
     font-family: var(--mono);
-    letter-spacing: 0.02em;
-  }
-  header.top .brand .dot {
-    display: inline-block;
-    width: 0.45rem;
-    height: 0.45rem;
-    background: var(--accent);
-    border-radius: 50%;
-    margin-right: 0.5rem;
-    vertical-align: middle;
-  }
-  header.top nav a {
-    margin-left: 1.5rem;
-    color: var(--text-muted);
+    color: var(--muted);
+    font-size: 0.9rem;
     border: 0;
   }
-  header.top nav a:hover { color: var(--text); }
+  .dot {
+    width: 0.45rem;
+    height: 0.45rem;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .nav {
+    display: flex;
+    gap: 1.35rem;
+    font-size: 0.85rem;
+  }
+  .nav a {
+    color: var(--dim);
+    border: 0;
+  }
+  .nav a:hover { color: var(--text); }
 
-  /* ─────────────────── hero ─────────────────── */
-  .hero h1 {
+  .hero {
+    padding: 5.5rem 0 4.5rem;
+    max-width: 780px;
+  }
+  .badge {
+    display: inline-block;
+    color: var(--accent);
+    font-size: 0.76rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 1rem;
+  }
+  h1 {
+    margin: 0;
+    max-width: 13ch;
     font-family: var(--serif);
     font-weight: 400;
-    font-size: clamp(2.5rem, 6.5vw, 4.25rem);
-    line-height: 1.05;
-    letter-spacing: -0.02em;
-    margin: 0 0 1.5rem;
+    line-height: 1.02;
+    letter-spacing: 0;
+    font-size: clamp(3rem, 8vw, 5.3rem);
   }
-  .hero h1 .accent { color: var(--accent); font-style: italic; }
-  .hero .lede {
-    font-size: 1.15rem;
-    color: var(--text-soft);
-    max-width: 32em;
-    margin: 0 0 2.5rem;
+  .accent { color: var(--accent); font-style: italic; }
+  .lede {
+    max-width: 44rem;
+    margin: 1.4rem 0 0;
+    color: var(--muted);
+    font-size: clamp(1.05rem, 2.2vw, 1.25rem);
   }
-  .hero .cta {
+  .hero-actions {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.75rem;
     align-items: center;
-    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+    gap: 0.8rem;
+    margin-top: 2rem;
   }
-  .hero .cta .install {
+  .quick-install {
+    display: inline-flex;
+    align-items: center;
+    min-height: 3rem;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    color: var(--muted);
     font-family: var(--mono);
     font-size: 0.92rem;
-    background: var(--bg-elev);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 0.7rem 1rem;
-    color: var(--text-soft);
     user-select: all;
   }
-  .hero .cta .install .prompt { color: var(--text-muted); margin-right: 0.4rem; }
-  .hero .cta .btn {
-    font-family: var(--sans);
-    font-size: 0.92rem;
+  .prompt { color: var(--dim); margin-right: 0.4rem; }
+  .button {
+    display: inline-flex;
+    align-items: center;
+    min-height: 3rem;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
     border: 1px solid var(--accent-line);
-    color: var(--accent);
     background: var(--accent-soft);
-    border-radius: 8px;
-    padding: 0.7rem 1.1rem;
-    text-decoration: none;
-    transition: background 0.15s ease, border-color 0.15s ease;
-  }
-  .hero .cta .btn:hover { background: var(--accent-line); border-color: var(--accent); }
-  .hero .meta {
-    font-size: 0.85rem;
-    color: var(--text-muted);
-  }
-  .hero .meta a { color: var(--text-muted); border-bottom-color: var(--border); }
-  .hero .meta a:hover { color: var(--text-soft); }
-
-  /* ─────────────────── sections ─────────────────── */
-  section { margin: 5rem 0; }
-  section h2 {
-    font-family: var(--serif);
-    font-weight: 400;
-    font-size: clamp(1.6rem, 3vw, 2.1rem);
-    line-height: 1.15;
-    letter-spacing: -0.015em;
-    margin: 0 0 1rem;
-  }
-  section h3 {
-    font-family: var(--sans);
-    font-weight: 600;
-    font-size: 1rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--text-muted);
-    margin: 2.5rem 0 0.75rem;
-  }
-  section p { color: var(--text-soft); }
-  .eyebrow {
-    display: inline-block;
-    font-size: 0.78rem;
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
     color: var(--accent);
-    margin-bottom: 0.6rem;
   }
-
-  /* ─────────────────── matrix ─────────────────── */
-  .matrix-wrap {
-    background: var(--bg-elev);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 1.5rem;
-    margin: 2rem 0 1rem;
-    overflow-x: auto;
-  }
-  .matrix {
-    display: grid;
-    grid-template-columns: 11rem repeat(4, minmax(5rem, 1fr));
-    gap: 1px;
-    background: var(--border);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    overflow: hidden;
-    min-width: 32rem;
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+    margin-top: 1.1rem;
+    color: var(--dim);
     font-size: 0.86rem;
   }
-  .matrix .cell {
-    background: var(--bg-elev);
-    padding: 0.65rem 0.75rem;
-    text-align: center;
-    font-variant-numeric: tabular-nums;
+  .meta span::after {
+    content: "/";
+    margin-left: 0.55rem;
+    color: var(--line);
   }
-  .matrix .cell.row-label {
-    text-align: left;
-    color: var(--text-soft);
-    font-family: var(--mono);
-    font-size: 0.82rem;
-  }
-  .matrix .cell.col-label {
-    color: var(--text-muted);
-    font-size: 0.78rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    background: var(--bg);
-  }
-  .matrix .cell.col-label.corner { background: var(--bg); }
-  .matrix .cell.score-best { color: var(--accent); font-weight: 600; }
-  .matrix .cell.score-good { color: var(--text); }
-  .matrix .cell.score-mid  { color: var(--text-soft); }
-  .matrix .cell.score-na   { color: var(--text-muted); font-style: italic; }
-  .matrix-caption {
-    font-size: 0.85rem;
-    color: var(--text-muted);
-    margin-top: 0.75rem;
-    line-height: 1.5;
-  }
+  .meta span:last-child::after { content: ""; margin: 0; }
 
-  /* ─────────────────── tools list ─────────────────── */
+  section {
+    padding: 4.5rem 0;
+    border-top: 1px solid var(--line-soft);
+  }
+  .section-head {
+    max-width: 720px;
+    margin-bottom: 2rem;
+  }
+  h2 {
+    margin: 0;
+    color: var(--text);
+    font-family: var(--serif);
+    font-weight: 400;
+    line-height: 1.15;
+    letter-spacing: 0;
+    font-size: clamp(2rem, 4vw, 3rem);
+  }
+  h3 {
+    margin: 0 0 0.55rem;
+    color: var(--text);
+    font-size: 1.05rem;
+    line-height: 1.35;
+  }
+  .lead {
+    margin: 0.8rem 0 0;
+    color: var(--muted);
+    font-size: 1.02rem;
+  }
+  .grid {
+    display: grid;
+    gap: 1rem;
+  }
+  .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .card {
+    min-width: 0;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 1.2rem;
+  }
+  .card p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.94rem;
+  }
+  .card .label {
+    display: block;
+    margin-bottom: 0.6rem;
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 0.78rem;
+  }
+  .surface {
+    display: grid;
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+    align-items: center;
+    gap: 2rem;
+    margin-top: 1.4rem;
+  }
+  .surface + .surface { margin-top: 3.25rem; }
+  .surface.flip {
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  }
+  .surface-text p {
+    margin: 0;
+    color: var(--muted);
+  }
   .tools {
     display: grid;
-    grid-template-columns: minmax(0, 1fr);
     gap: 0;
-    border: 1px solid var(--border);
-    border-radius: 10px;
     overflow: hidden;
-    margin: 1.5rem 0;
+    border: 1px solid var(--line);
+    border-radius: 10px;
   }
   .tool {
     display: grid;
-    grid-template-columns: minmax(10rem, 13rem) 1fr;
-    gap: 1.25rem;
-    padding: 0.9rem 1.1rem;
-    background: var(--bg-elev);
-    border-bottom: 1px solid var(--border);
-    align-items: baseline;
+    grid-template-columns: minmax(10rem, 14rem) minmax(0, 1fr);
+    gap: 1rem;
+    padding: 1rem 1.1rem;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
   }
   .tool:last-child { border-bottom: 0; }
-  .tool-name { font-family: var(--mono); font-size: 0.88rem; color: var(--accent); }
-  .tool-desc { color: var(--text-soft); font-size: 0.94rem; }
-
-  /* ─────────────────── steps ─────────────────── */
-  .scoring {
-    list-style: none;
-    padding: 0;
-    margin: 1.5rem 0 0;
-    counter-reset: step;
-  }
-  .scoring li {
-    counter-increment: step;
-    position: relative;
-    padding: 0.75rem 0 0.75rem 3rem;
-    border-bottom: 1px solid var(--border-soft);
-    color: var(--text-soft);
-  }
-  .scoring li:last-child { border-bottom: 0; }
-  .scoring li::before {
-    content: counter(step, decimal-leading-zero);
-    position: absolute;
-    left: 0;
-    top: 0.85rem;
-    font-family: var(--mono);
-    font-size: 0.78rem;
+  .tool-name {
     color: var(--accent);
-    letter-spacing: 0.04em;
-  }
-  .scoring li strong {
-    color: var(--text);
-    font-weight: 600;
-    display: block;
-    margin-bottom: 0.1rem;
-  }
-
-  /* ─────────────────── footer ─────────────────── */
-  footer {
-    margin-top: 6rem;
-    padding-top: 2rem;
-    border-top: 1px solid var(--border);
-    color: var(--text-muted);
+    font-family: var(--mono);
     font-size: 0.85rem;
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: space-between;
+  }
+  .tool-desc {
+    color: var(--muted);
+    font-size: 0.94rem;
+  }
+  .compare {
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+  }
+  .compare-row {
+    display: grid;
+    grid-template-columns: 0.85fr 1fr 1fr;
+    border-bottom: 1px solid var(--line);
+  }
+  .compare-row:last-child { border-bottom: 0; }
+  .compare-row > div {
+    padding: 0.85rem 1rem;
+    color: var(--muted);
+    border-right: 1px solid var(--line);
+    font-size: 0.92rem;
+  }
+  .compare-row > div:last-child { border-right: 0; }
+  .compare-head > div {
+    color: var(--text);
+    background: var(--panel-strong);
+    font-weight: 600;
+  }
+  .install-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 1rem;
   }
-  footer a { color: var(--text-muted); border-bottom-color: var(--border); }
-  footer a:hover { color: var(--text-soft); border-bottom-color: var(--text-muted); }
+  .install-card {
+    margin-bottom: 1rem;
+  }
+  .install-card:last-child { margin-bottom: 0; }
+  .install-label {
+    margin-bottom: 0.4rem;
+    color: var(--text);
+    font-weight: 600;
+    font-size: 0.92rem;
+  }
+  .cmd {
+    overflow-x: auto;
+    white-space: pre;
+    background: var(--code);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 0.85rem 1rem;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 0.84rem;
+  }
+  .hint {
+    margin-top: 0.4rem;
+    color: var(--dim);
+    font-size: 0.82rem;
+  }
+  .faq {
+    display: grid;
+    gap: 0.6rem;
+  }
+  details {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 1rem 1.1rem;
+  }
+  summary {
+    cursor: pointer;
+    color: var(--text);
+    font-weight: 600;
+  }
+  details p {
+    margin: 0.8rem 0 0;
+    color: var(--muted);
+  }
+  footer {
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 1rem;
+    padding-top: 2rem;
+    border-top: 1px solid var(--line);
+    color: var(--dim);
+    font-size: 0.84rem;
+  }
+  footer a {
+    color: var(--dim);
+    border-bottom-color: var(--line);
+  }
 
-  /* ─────────────────── responsive ─────────────────── */
-  @media (max-width: 540px) {
-    .page { padding: 1.5rem 1.25rem 4rem; }
-    header.top { padding-bottom: 2rem; flex-direction: column; align-items: flex-start; gap: 0.5rem; }
-    header.top nav a { margin-left: 0; margin-right: 1rem; }
-    .hero .cta { flex-direction: column; align-items: stretch; }
-    .hero .cta .install, .hero .cta .btn { width: 100%; text-align: center; }
-    .tool { grid-template-columns: 1fr; gap: 0.25rem; }
-    .matrix { grid-template-columns: 8rem repeat(4, minmax(3.5rem, 1fr)); font-size: 0.78rem; }
+  @media (max-width: 800px) {
+    .grid.two,
+    .grid.three,
+    .surface,
+    .surface.flip,
+    .install-grid {
+      grid-template-columns: 1fr;
+    }
+    .surface + .surface { margin-top: 2.25rem; }
+    .compare { overflow-x: auto; }
+    .compare-row { min-width: 40rem; }
+  }
+  @media (max-width: 560px) {
+    .page { padding: 0 1.25rem 4rem; }
+    .top {
+      position: static;
+      align-items: flex-start;
+      flex-direction: column;
+      gap: 0.7rem;
+    }
+    .nav {
+      width: 100%;
+      gap: 0.8rem;
+      flex-wrap: wrap;
+    }
+    .hero { padding: 3.5rem 0; }
+    h1 { font-size: 3.1rem; }
+    .hero-actions { align-items: stretch; flex-direction: column; }
+    .quick-install,
+    .button {
+      width: 100%;
+      justify-content: center;
+      text-align: center;
+    }
+    .tool {
+      grid-template-columns: 1fr;
+      gap: 0.25rem;
+    }
+    section { padding: 3.25rem 0; }
   }
 
   @media (prefers-reduced-motion: no-preference) {
-    .reveal { opacity: 0; transform: translateY(0.75rem); transition: opacity 0.6s ease, transform 0.6s ease; }
-    .reveal.in  { opacity: 1; transform: none; }
+    .reveal {
+      opacity: 0;
+      transform: translateY(0.75rem);
+      transition: opacity 0.5s ease, transform 0.5s ease;
+    }
+    .reveal.in {
+      opacity: 1;
+      transform: none;
+    }
   }
 </style>
 </head>
 <body>
 <div class="page">
+  <header class="top">
+    <a class="brand" href="#top" aria-label="Harness Router home">
+      <span class="dot"></span>
+      <span>harness-router</span>
+    </a>
+    <nav class="nav" aria-label="Primary">
+      <a href="#what">what it does</a>
+      <a href="#opencode">compared to opencode</a>
+      <a href="#install">install</a>
+      <a href="#faq">faq</a>
+      <a href="https://github.com/fstubner/harness-router-mcp">github</a>
+    </nav>
+  </header>
 
-<header class="top">
-  <div class="brand"><span class="dot"></span>harness-router</div>
-  <nav>
-    <a href="#how">how it works</a>
-    <a href="#tools">surface</a>
-    <a href="#install">install</a>
-    <a href="https://github.com/fstubner/harness-router-mcp">github</a>
-  </nav>
-</header>
+  <main id="top">
+    <section class="hero">
+      <span class="badge">Local MCP router for coding agents</span>
+      <h1>Stop manually switching coding agents.</h1>
+      <p class="lede">
+        Harness Router is a local MCP server that routes each coding task
+        through Claude Code, Codex, Cursor, Gemini CLI, opencode, Copilot CLI,
+        or an API fallback based on your priority list and live route health.
+      </p>
+      <div class="hero-actions">
+        <code class="quick-install"><span class="prompt">$</span>npx -y harness-router</code>
+        <a class="button" href="https://github.com/fstubner/harness-router-mcp">View source</a>
+      </div>
+      <div class="meta">
+        <span>Open source</span>
+        <span>MIT</span>
+        <span>Node &gt;=20</span>
+        <span>npm: <a href="https://www.npmjs.com/package/harness-router">harness-router</a></span>
+      </div>
+    </section>
 
-<section class="hero">
-  <h1>
-    Use your <span class="accent">subscriptions</span>.<br />
-    Then the API.
-  </h1>
-  <p class="lede">
-    An MCP server that routes coding tasks model-first across your AI
-    subscriptions and APIs. Claude Pro, ChatGPT Plus, Cursor, Copilot CLI,
-    opencode — try the flat-rate ones first. Only fall back to metered API
-    when the subscriptions are dry.
-  </p>
-  <div class="cta">
-    <code class="install"><span class="prompt">$</span>npx -y harness-router</code>
-    <a class="btn" href="https://github.com/fstubner/harness-router-mcp">View on GitHub →</a>
-  </div>
-  <div class="meta">
-    MCP server · TypeScript · Node 20+ · MIT · npm:
-    <a href="https://www.npmjs.com/package/harness-router">harness-router</a>
-  </div>
-</section>
+    <section id="what" class="reveal">
+      <div class="section-head">
+        <span class="badge">What it does</span>
+        <h2>One MCP entry point for every coding route.</h2>
+        <p class="lead">
+          Your host calls one tool. Harness Router walks your model priority
+          list, tries subscription-backed CLIs first, skips broken routes, and
+          falls back to API only when the local options are dry.
+        </p>
+      </div>
 
-<section id="why" class="reveal">
-  <span class="eyebrow">The point</span>
-  <h2>Subscriptions you've paid for, used to the limit.</h2>
-  <p>
-    You're already paying $20/month for Claude Pro. Maybe another $20 for
-    ChatGPT Plus. Maybe Cursor on top. Each one comes with a flat-rate quota
-    that resets every few hours. When you hit a limit on one of them, the
-    natural next move is to switch to another tool you're paying for — not
-    to swipe a credit card for metered API access at $5–15 per million tokens.
-  </p>
-  <p>
-    But you don't actually do that. You hit the limit, wait it out, or
-    silently start paying API rates because you forgot to switch. Harness
-    Router automates the switch. You declare a model preference list. It
-    walks down it, picking the highest-priority model that has a working
-    route — preferring subscription-backed CLIs and only touching metered
-    API as a last resort.
-  </p>
-</section>
+      <div class="grid three">
+        <article class="card">
+          <span class="label">01</span>
+          <h3>Write the policy once</h3>
+          <p>
+            List the models you prefer and the routes that can serve them. The
+            host does not need to know which vendor wins a given request.
+          </p>
+        </article>
+        <article class="card">
+          <span class="label">02</span>
+          <h3>Use subscription quota first</h3>
+          <p>
+            Claude Code, Codex, Cursor, opencode, Copilot CLI, and Gemini CLI
+            can be tried before metered OpenAI-compatible endpoints.
+          </p>
+        </article>
+        <article class="card">
+          <span class="label">03</span>
+          <h3>See the route decision</h3>
+          <p>
+            Status resources and the dashboard show route reachability, quota,
+            circuit breakers, and the route chosen for a task.
+          </p>
+        </article>
+      </div>
 
-<section id="how" class="reveal">
-  <span class="eyebrow">How it works</span>
-  <h2>One algorithm, model-first config.</h2>
-  <p>
-    Walk the model priority list. For each model, try every subscription
-    route first. Then try metered. Drop to the next model only when both
-    tiers are exhausted.
-  </p>
-  <pre><code><span class="comment"># config.yaml</span>
+      <div class="surface">
+        <div class="surface-text">
+          <h3>Model-first configuration</h3>
+          <p>
+            Configure the outcome you want, then attach the routes that can
+            deliver it. This keeps the policy readable when you add another
+            CLI, account, local model, or API fallback.
+          </p>
+        </div>
+        <pre><code><span class="comment"># ~/.harness-router/config.yaml</span>
 <span class="kw">priority</span>:
   - claude-opus-4-7
   - gpt-5.4
-  - gemini-3.1-pro
 
 <span class="kw">models</span>:
   claude-opus-4-7:
     subscription:
       - harness: claude_code
-      - harness: cursor
+      - harness: opencode
     metered:
       base_url: https://api.anthropic.com/v1
       api_key: <span class="str">"${ANTHROPIC_API_KEY}"</span>
   gpt-5.4:
     subscription:
       - harness: codex
-      - harness: copilot
-    metered:
-      base_url: https://api.openai.com/v1
-      api_key: <span class="str">"${OPENAI_API_KEY}"</span></code></pre>
-  <p>
-    With this config, an Opus task tries Claude Code first. If your Claude
-    Pro quota is dry, it falls through to the Anthropic API. Only when
-    Anthropic is also dry does the router drop to GPT-5 and try Codex /
-    Copilot. The model is what you care about; the route is plumbing.
-  </p>
-</section>
+      - harness: copilot</code></pre>
+      </div>
 
-<section id="tools" class="reveal">
-  <span class="eyebrow">MCP surface</span>
-  <h2>One tool, with status exposed as resources.</h2>
-  <p>
-    Add the server to Claude Desktop, Cursor, or any MCP client. Coding
-    tasks call <code>code</code>. Status is inspectable through MCP resources
-    so tool lists stay small.
-  </p>
+      <div class="surface flip">
+        <pre><code><span class="comment">// MCP tool surface</span>
+<span class="kw">code</span>({
+  prompt: <span class="str">"Refactor the auth callback"</span>,
+  mode: <span class="str">"single"</span>,
+  hints: { model: <span class="str">"claude-opus-4-7"</span> }
+})
 
-  <div class="tools">
-    <div class="tool"><div class="tool-name">code</div><div class="tool-desc">Walk your model priority list and dispatch to the best available route. Use <code>mode: "single"</code> for normal routing or <code>mode: "fanout"</code> for parallel model comparison.</div></div>
-    <div class="tool"><div class="tool-name">harness-router://status</div><div class="tool-desc">Text status: model priority, route reachability, quota counters, breaker state, and the router's current pick.</div></div>
-    <div class="tool"><div class="tool-name">harness-router://status.json</div><div class="tool-desc">Machine-readable status for automation and host integrations.</div></div>
-  </div>
-</section>
+<span class="kw">code</span>({
+  prompt: <span class="str">"Compare two migration plans"</span>,
+  mode: <span class="str">"fanout"</span>,
+  models: [<span class="str">"gpt-5.4"</span>, <span class="str">"claude-opus-4-7"</span>]
+})</code></pre>
+        <div class="surface-text">
+          <h3>Small MCP surface</h3>
+          <p>
+            Hosts see one coding tool: <code>code</code>. Use single mode for
+            normal work and fanout mode when you want multiple model routes to
+            answer the same prompt. Status lives in resources, not extra tools.
+          </p>
+        </div>
+      </div>
+    </section>
 
-<section id="install" class="reveal">
-  <span class="eyebrow">Install</span>
-  <h2>Two commands and a config block.</h2>
-  <p>You need Node 20 or newer and at least one CLI installed: <code>claude</code>, <code>codex</code>, <code>gemini</code>, Cursor’s <code>agent</code>, <code>opencode</code>, <code>copilot</code> (the GitHub Copilot CLI), or anything you register yourself in YAML. Log in to the ones you want to use, then add the server to your MCP client.</p>
+    <section id="opencode" class="reveal">
+      <div class="section-head">
+        <span class="badge">Compared to opencode</span>
+        <h2>opencode is an agent. Harness Router is the routing layer.</h2>
+        <p class="lead">
+          They can work together. opencode remains one of the execution routes.
+          Harness Router decides when opencode, Codex, Claude Code, Cursor, a
+          generic CLI, or an API route should handle the next request.
+        </p>
+      </div>
 
-  <h3>1. Install</h3>
-<pre><code><span class="comment"># One-shot — no global install</span>
-npx -y harness-router
+      <div class="compare" role="table" aria-label="Harness Router compared to opencode">
+        <div class="compare-row compare-head" role="row">
+          <div role="columnheader">Question</div>
+          <div role="columnheader">opencode</div>
+          <div role="columnheader">Harness Router</div>
+        </div>
+        <div class="compare-row" role="row">
+          <div role="cell">What is it?</div>
+          <div role="cell">A coding agent with TUI, CLI, desktop, and editor surfaces.</div>
+          <div role="cell">A local MCP server that chooses between coding agents and model routes.</div>
+        </div>
+        <div class="compare-row" role="row">
+          <div role="cell">Who edits code?</div>
+          <div role="cell">opencode does the work directly.</div>
+          <div role="cell">The selected route does the work. That route can be opencode.</div>
+        </div>
+        <div class="compare-row" role="row">
+          <div role="cell">What problem does it solve?</div>
+          <div role="cell">A developer wants one strong open source coding agent.</div>
+          <div role="cell">A developer uses several agents and wants quota-aware fallback without manual switching.</div>
+        </div>
+        <div class="compare-row" role="row">
+          <div role="cell">When should I use it?</div>
+          <div role="cell">Use opencode when you want to work in its agent session.</div>
+          <div role="cell">Use Harness Router when another MCP host needs a stable routing policy across tools.</div>
+        </div>
+      </div>
+    </section>
 
-<span class="comment"># Or install globally</span>
-npm install -g harness-router
-harness-router --help</code></pre>
+    <section id="surface" class="reveal">
+      <div class="section-head">
+        <span class="badge">Runtime surface</span>
+        <h2>Routing state stays inspectable.</h2>
+        <p class="lead">
+          The server exposes one tool for work and two resources for state.
+          This keeps MCP clients clean while still giving operators a way to
+          see what is reachable.
+        </p>
+      </div>
 
-  <h3>2. Wire into Claude Desktop / Cursor</h3>
-<pre><code>{
-  <span class="str">"mcpServers"</span>: {
-    <span class="str">"harness-router"</span>: {
-      <span class="str">"command"</span>: <span class="str">"npx"</span>,
-      <span class="str">"args"</span>: [<span class="str">"-y"</span>, <span class="str">"harness-router"</span>],
-      <span class="str">"env"</span>: {
-        <span class="str">"HARNESS_ROUTER_CONFIG"</span>: <span class="str">"/path/to/config.yaml"</span>,
-        <span class="str">"GEMINI_API_KEY"</span>: <span class="str">"your-key-here"</span>
-      }
-    }
-  }
-}</code></pre>
+      <div class="tools">
+        <div class="tool">
+          <div class="tool-name">code</div>
+          <div class="tool-desc">Dispatch a coding task in single-route mode or fanout mode.</div>
+        </div>
+        <div class="tool">
+          <div class="tool-name">harness-router://status</div>
+          <div class="tool-desc">Text status for configured models, route reachability, quota, and breakers.</div>
+        </div>
+        <div class="tool">
+          <div class="tool-name">harness-router://status.json</div>
+          <div class="tool-desc">Machine-readable status for scripts, hosts, and diagnostics.</div>
+        </div>
+      </div>
+    </section>
 
-  <h3>3. Generate and verify config</h3>
-<pre><code><span class="comment"># Generate ~/.harness-router/config.yaml interactively.</span>
-harness-router onboard
+    <section id="install" class="reveal">
+      <div class="section-head">
+        <span class="badge">Get started</span>
+        <h2>Install once, then wire it into your MCP host.</h2>
+        <p class="lead">
+          Requires Node 20 or newer and at least one configured route: Claude
+          Code, Codex, Cursor agent, Gemini CLI, opencode, Copilot CLI, a
+          generic CLI, or an OpenAI-compatible API endpoint.
+        </p>
+      </div>
 
-<span class="comment"># Verify CLIs and optional live probe routes.</span>
+      <div class="install-grid">
+        <div>
+          <div class="install-card">
+            <div class="install-label">One-shot MCP server</div>
+            <div class="cmd">npx -y harness-router</div>
+            <div class="hint">Bare invocation starts the stdio MCP server.</div>
+          </div>
+          <div class="install-card">
+            <div class="install-label">Global CLI</div>
+            <div class="cmd">npm install -g harness-router</div>
+            <div class="hint">Use this for <code>onboard</code>, <code>doctor</code>, and dashboard commands.</div>
+          </div>
+          <div class="install-card">
+            <div class="install-label">Interactive setup</div>
+            <div class="cmd">harness-router onboard</div>
+            <div class="hint">Detects CLIs, writes config, and can install MCP host entries.</div>
+          </div>
+        </div>
+        <pre><code><span class="comment"># Verify route health</span>
 harness-router doctor
-harness-router doctor --probe-routes</code></pre>
-  <p>Restart your MCP client. The <code>code</code> tool is live in chat. You can also watch service status from the terminal with <code>harness-router dashboard --watch</code>.</p>
-</section>
+harness-router doctor --probe-routes
 
-<footer>
-  <div>
-    Built by <a href="https://github.com/fstubner">Felix Stubner</a> · MIT licensed
-  </div>
-  <div>
-    <a href="https://github.com/fstubner/harness-router-mcp">github</a>
-    &nbsp;·&nbsp;
-    <a href="https://www.npmjs.com/package/harness-router">npm</a>
-    &nbsp;·&nbsp;
-    <a href="https://modelcontextprotocol.io">mcp</a>
-  </div>
-</footer>
+<span class="comment"># Watch local routing state</span>
+harness-router dashboard --watch
 
+<span class="comment"># Print MCP host config snippets</span>
+harness-router install --print</code></pre>
+      </div>
+    </section>
+
+    <section id="faq" class="reveal">
+      <div class="section-head">
+        <span class="badge">FAQ</span>
+        <h2>Questions before you put a router in front of your agents.</h2>
+      </div>
+
+      <div class="faq">
+        <details>
+          <summary>Is Harness Router an AI coding agent?</summary>
+          <p>
+            No. Harness Router is a local MCP router. It delegates coding work
+            to tools such as Claude Code, Codex, Cursor, Gemini CLI, opencode,
+            Copilot CLI, generic CLI routes, and OpenAI-compatible APIs.
+          </p>
+        </details>
+        <details>
+          <summary>How is Harness Router different from opencode?</summary>
+          <p>
+            opencode is a coding agent you use directly. Harness Router sits
+            above coding agents and decides which route should handle a task
+            based on model priority, subscription availability, quota, circuit
+            breaker state, and metered fallback.
+          </p>
+        </details>
+        <details>
+          <summary>Does Harness Router send code to a hosted service?</summary>
+          <p>
+            No hosted Harness Router service is required. It runs locally as an
+            MCP server and dispatches only to the CLIs or APIs you configure.
+          </p>
+        </details>
+        <details>
+          <summary>Which tools can Harness Router route to?</summary>
+          <p>
+            Claude Code, Codex, Cursor agent, Gemini CLI, opencode, GitHub
+            Copilot CLI, generic CLI routes, and OpenAI-compatible API
+            endpoints.
+          </p>
+        </details>
+        <details>
+          <summary>What happens when a route hits a limit?</summary>
+          <p>
+            Harness Router marks that route with a circuit breaker and moves to
+            the next eligible route. Status resources and the dashboard show
+            what happened.
+          </p>
+        </details>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div>Built by <a href="https://github.com/fstubner">Felix Stubner</a>. MIT licensed.</div>
+    <div>
+      <a href="https://github.com/fstubner/harness-router-mcp">GitHub</a>
+      &nbsp;/&nbsp;
+      <a href="https://www.npmjs.com/package/harness-router">npm</a>
+      &nbsp;/&nbsp;
+      <a href="https://modelcontextprotocol.io">MCP</a>
+    </div>
+  </footer>
 </div>
 
 <script>
-  // Progressive enhancement: fade-in on scroll. Page is fully usable without JS.
-  if ('IntersectionObserver' in window) {
+  if ("IntersectionObserver" in window) {
     const io = new IntersectionObserver((entries) => {
       for (const entry of entries) {
-        if (entry.isIntersecting) {
-          entry.target.classList.add('in');
-          io.unobserve(entry.target);
-        }
+        if (!entry.isIntersecting) continue;
+        entry.target.classList.add("in");
+        io.unobserve(entry.target);
       }
-    }, { rootMargin: '0px 0px -10% 0px', threshold: 0.05 });
-    document.querySelectorAll('.reveal').forEach((el) => io.observe(el));
+    }, { rootMargin: "0px 0px -10% 0px", threshold: 0.05 });
+    document.querySelectorAll(".reveal").forEach((el) => io.observe(el));
   } else {
-    document.querySelectorAll('.reveal').forEach((el) => el.classList.add('in'));
+    document.querySelectorAll(".reveal").forEach((el) => el.classList.add("in"));
   }
 </script>
-
 </body>
 </html>
