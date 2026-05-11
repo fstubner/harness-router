@@ -234,7 +234,7 @@ UPSERTs, so concurrent processes accumulate cleanly:
 - v0.2 configs are NOT migrated. The loader rejects them with a
   `ConfigError` pointing at `harness-router onboard`.
 - The npm package renamed from `harness-router-mcp` to `harness-router` at
-  v0.3.0. The old name is unpublished going forward.
+  v0.3.0. The old name is deprecated going forward.
 
 ## License
 

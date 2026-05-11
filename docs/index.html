@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Harness Router MCP — use your AI subscriptions before metered API</title>
+<title>Harness Router — use your AI subscriptions before metered API</title>
 <meta name="description" content="An MCP server that routes coding tasks model-first across whatever AI CLIs you have installed. Subscription-backed CLIs (Claude Code, Cursor, Codex, Copilot CLI, opencode) are tried first; metered API is the fallback." />
 <meta name="theme-color" content="#0e0f12" />
 
-<meta property="og:title" content="Harness Router MCP" />
+<meta property="og:title" content="Harness Router" />
 <meta property="og:description" content="Use your AI subscriptions before paying for metered API. An MCP server that walks a model priority list and routes through whichever CLI has free quota left." />
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://fstubner.github.io/harness-router-mcp/" />
@@ -345,10 +345,10 @@
 <div class="page">
 
 <header class="top">
-  <div class="brand"><span class="dot"></span>harness-router-mcp</div>
+  <div class="brand"><span class="dot"></span>harness-router</div>
   <nav>
     <a href="#how">how it works</a>
-    <a href="#tools">tools</a>
+    <a href="#tools">surface</a>
     <a href="#install">install</a>
     <a href="https://github.com/fstubner/harness-router-mcp">github</a>
   </nav>
@@ -366,12 +366,12 @@
     when the subscriptions are dry.
   </p>
   <div class="cta">
-    <code class="install"><span class="prompt">$</span>npx -y harness-router-mcp mcp</code>
+    <code class="install"><span class="prompt">$</span>npx -y harness-router</code>
     <a class="btn" href="https://github.com/fstubner/harness-router-mcp">View on GitHub →</a>
   </div>
   <div class="meta">
     MCP server · TypeScript · Node 20+ · MIT · npm:
-    <a href="https://www.npmjs.com/package/harness-router-mcp">harness-router-mcp</a>
+    <a href="https://www.npmjs.com/package/harness-router">harness-router</a>
   </div>
 </section>
 
@@ -397,27 +397,33 @@
 
 <section id="how" class="reveal">
   <span class="eyebrow">How it works</span>
-  <h2>One algorithm, four lines.</h2>
+  <h2>One algorithm, model-first config.</h2>
   <p>
     Walk the model priority list. For each model, try every subscription
     route first. Then try metered. Drop to the next model only when both
     tiers are exhausted.
   </p>
   <pre><code><span class="comment"># config.yaml</span>
-<span class="kw">model_priority</span>:
-  - claude-opus-4.7
+<span class="kw">priority</span>:
+  - claude-opus-4-7
   - gpt-5.4
-  - claude-sonnet-4.6
   - gemini-3.1-pro
 
-<span class="kw">services</span>:
-  claude_code:    { harness: claude_code,    model: claude-opus-4.7,    tier: subscription }
-  cursor:         { harness: cursor,         model: claude-sonnet-4.6,  tier: subscription }
-  codex:          { harness: codex,          model: gpt-5.4,            tier: subscription }
-  copilot:        { harness: copilot,        model: gpt-5.4,            tier: subscription }
-  gemini_cli:     { harness: gemini_cli,     model: gemini-3.1-pro,     tier: subscription }
-  anthropic_api:  { type: openai_compatible, model: claude-opus-4.7,    tier: metered,
-                    base_url: https://api.anthropic.com/v1, api_key: <span class="str">"${ANTHROPIC_API_KEY}"</span> }</code></pre>
+<span class="kw">models</span>:
+  claude-opus-4-7:
+    subscription:
+      - harness: claude_code
+      - harness: cursor
+    metered:
+      base_url: https://api.anthropic.com/v1
+      api_key: <span class="str">"${ANTHROPIC_API_KEY}"</span>
+  gpt-5.4:
+    subscription:
+      - harness: codex
+      - harness: copilot
+    metered:
+      base_url: https://api.openai.com/v1
+      api_key: <span class="str">"${OPENAI_API_KEY}"</span></code></pre>
   <p>
     With this config, an Opus task tries Claude Code first. If your Claude
     Pro quota is dry, it falls through to the Anthropic API. Only when
@@ -427,19 +433,18 @@
 </section>
 
 <section id="tools" class="reveal">
-  <span class="eyebrow">MCP tools</span>
-  <h2>Four tools your MCP client picks up automatically.</h2>
+  <span class="eyebrow">MCP surface</span>
+  <h2>One tool, with status exposed as resources.</h2>
   <p>
-    Add the server to Claude Desktop, Cursor, or any MCP client. You get
-    four tools that handle routing, quota tracking, and circuit breaking
-    for you. Most coding tasks just call <code>code</code>.
+    Add the server to Claude Desktop, Cursor, or any MCP client. Coding
+    tasks call <code>code</code>. Status is inspectable through MCP resources
+    so tool lists stay small.
   </p>
 
   <div class="tools">
-    <div class="tool"><div class="tool-name">code</div><div class="tool-desc">Walk your model priority list and dispatch to the best available route. Hints: <code>model</code> (bump a model to the front) or <code>service</code> (force a specific dispatcher).</div></div>
-    <div class="tool"><div class="tool-name">code_mixture</div><div class="tool-desc">Fan out to every available service in parallel. One result per service; you synthesise. Useful for architecture decisions where multiple perspectives help.</div></div>
-    <div class="tool"><div class="tool-name">dashboard</div><div class="tool-desc">Multi-line text status — model priority, per-service reachability, quota, breaker state, the router's current pick.</div></div>
-    <div class="tool"><div class="tool-name">get_quota_status</div><div class="tool-desc">JSON version of dashboard, for tooling.</div></div>
+    <div class="tool"><div class="tool-name">code</div><div class="tool-desc">Walk your model priority list and dispatch to the best available route. Use <code>mode: "single"</code> for normal routing or <code>mode: "fanout"</code> for parallel model comparison.</div></div>
+    <div class="tool"><div class="tool-name">harness-router://status</div><div class="tool-desc">Text status: model priority, route reachability, quota counters, breaker state, and the router's current pick.</div></div>
+    <div class="tool"><div class="tool-name">harness-router://status.json</div><div class="tool-desc">Machine-readable status for automation and host integrations.</div></div>
   </div>
 </section>
 
@@ -450,18 +455,18 @@
 
   <h3>1. Install</h3>
 <pre><code><span class="comment"># One-shot — no global install</span>
-npx -y harness-router-mcp mcp
+npx -y harness-router
 
 <span class="comment"># Or install globally</span>
-npm install -g harness-router-mcp
-harness-router-mcp --help</code></pre>
+npm install -g harness-router
+harness-router --help</code></pre>
 
   <h3>2. Wire into Claude Desktop / Cursor</h3>
 <pre><code>{
   <span class="str">"mcpServers"</span>: {
     <span class="str">"harness-router"</span>: {
       <span class="str">"command"</span>: <span class="str">"npx"</span>,
-      <span class="str">"args"</span>: [<span class="str">"-y"</span>, <span class="str">"harness-router-mcp"</span>, <span class="str">"mcp"</span>],
+      <span class="str">"args"</span>: [<span class="str">"-y"</span>, <span class="str">"harness-router"</span>],
       <span class="str">"env"</span>: {
         <span class="str">"HARNESS_ROUTER_CONFIG"</span>: <span class="str">"/path/to/config.yaml"</span>,
         <span class="str">"GEMINI_API_KEY"</span>: <span class="str">"your-key-here"</span>
@@ -470,14 +475,14 @@ harness-router-mcp --help</code></pre>
   }
 }</code></pre>
 
-  <h3>3. Optional — tune defaults</h3>
-<pre><code><span class="comment"># config.yaml — zero config also works; this just tunes auto-detect.</span>
-<span class="kw">overrides</span>:
-  claude_code: { weight: <span class="str">1.2</span> }
-  gemini_cli:  { thinking_level: medium }
+  <h3>3. Generate and verify config</h3>
+<pre><code><span class="comment"># Generate ~/.harness-router/config.yaml interactively.</span>
+harness-router onboard
 
-<span class="kw">disabled</span>: [cursor]    <span class="comment"># skip an installed CLI</span></code></pre>
-  <p>Restart your MCP client. The four tools above are live in chat. You can also watch service status from the terminal with <code>harness-router-mcp dashboard --watch</code>.</p>
+<span class="comment"># Verify CLIs and optional live probe routes.</span>
+harness-router doctor
+harness-router doctor --probe-routes</code></pre>
+  <p>Restart your MCP client. The <code>code</code> tool is live in chat. You can also watch service status from the terminal with <code>harness-router dashboard --watch</code>.</p>
 </section>
 
 <footer>
@@ -487,7 +492,7 @@ harness-router-mcp --help</code></pre>
   <div>
     <a href="https://github.com/fstubner/harness-router-mcp">github</a>
     &nbsp;·&nbsp;
-    <a href="https://www.npmjs.com/package/harness-router-mcp">npm</a>
+    <a href="https://www.npmjs.com/package/harness-router">npm</a>
     &nbsp;·&nbsp;
     <a href="https://modelcontextprotocol.io">mcp</a>
   </div>

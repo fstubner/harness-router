@@ -3,8 +3,8 @@
  *
  * Pure function `renderDashboard(state)` → ANSI-formatted string. Consumed
  * by:
- *   - The `dashboard` MCP tool (one-shot snapshot, no ANSI codes unless the
- *     caller asks for them).
+ *   - The `harness-router://status` MCP resource (one-shot snapshot, no ANSI
+ *     codes unless the caller asks for them).
  *   - `bin.ts dashboard --watch` (live-redraw loop — prints ANSI codes
  *     when the output is a TTY).
  *

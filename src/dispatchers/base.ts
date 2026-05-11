@@ -2,8 +2,9 @@
  * Dispatcher abstraction.
  *
  * Every backend (Claude Code CLI, Cursor, Codex, Gemini, OpenAI-compatible HTTP)
- * implements this. The router picks one via scoring; the MCP server awaits
- * `dispatch()` or iterates `stream()`.
+ * implements this. The router picks one via model priority, tier, quota, and
+ * circuit-breaker state; the MCP server awaits `dispatch()` or iterates
+ * `stream()`.
  *
  * R3 change: `stream()` is now the canonical primitive. `dispatch()` is
  * implemented by consuming the stream and buffering its events — concrete

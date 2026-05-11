@@ -406,8 +406,8 @@ async function handleCodeFanout(
       return {
         results: [],
         error:
-          "No candidate services available for code_mixture. Check breaker " +
-          "state via get_quota_status, or relax the `services`/`models` filter.",
+          "No candidate routes available for code mode=fanout. Check " +
+          "`harness-router://status.json`, or relax the `models` filter.",
       };
     }
 
@@ -591,7 +591,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         '"fanout" runs the prompt against multiple services in parallel and returns one result per service ' +
         "for the caller to synthesise. " +
         "In single mode use `hints.model` / `hints.service` to override routing; in fanout mode use " +
-        "`models` (canonical model keys) or `services` (explicit dispatcher names) to choose the candidate set.",
+        "`models` (canonical model keys) to choose the candidate set.",
       inputSchema: codeInputShape,
     },
     async (args, extra) => jsonText(await handleCode(deps, args, extra as ToolExtra)),

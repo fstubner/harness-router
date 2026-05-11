@@ -20,7 +20,7 @@
   ],
   "license": "MIT",
   "author": "Felix Stubner",
-  "homepage": "https://fstubner.github.io/harness-router/",
+  "homepage": "https://fstubner.github.io/harness-router-mcp/",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -31,7 +31,7 @@
     }
   },
   "bin": {
-    "harness-router": "./dist/bin.js"
+    "harness-router": "dist/bin.js"
   },
   "files": [
     "dist/",
@@ -44,7 +44,7 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json",
     "dev": "tsx src/bin.ts",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -62,9 +62,9 @@
     "@inquirer/prompts": "^8.4.2",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@opentelemetry/api": "^1.9.1",
-    "@opentelemetry/auto-instrumentations-node": "^0.49.2",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.52.1",
-    "@opentelemetry/sdk-node": "^0.52.1",
+    "@opentelemetry/auto-instrumentations-node": "^0.75.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.217.0",
+    "@opentelemetry/sdk-node": "^0.217.0",
     "better-sqlite3": "^12.9.0",
     "js-yaml": "^4.1.0",
     "smol-toml": "^1.6.1",
@@ -96,9 +96,9 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/fstubner/harness-router.git"
+    "url": "git+https://github.com/fstubner/harness-router-mcp.git"
   },
   "bugs": {
-    "url": "https://github.com/fstubner/harness-router/issues"
+    "url": "https://github.com/fstubner/harness-router-mcp/issues"
   }
 }

@@ -9,7 +9,7 @@
  * Python reference works around this by patching
  *   ~/.gemini/settings.json → modelConfigs.generateContentConfig.thinkingLevel
  * around each dispatch. We reproduce that here using a zero-dependency
- * promise-chain mutex so concurrent dispatches (e.g. via code_mixture) cannot
+ * promise-chain mutex so concurrent fanout dispatches cannot
  * stomp on each other's settings.
  *
  * Override ~/.gemini/settings.json path with GEMINI_SETTINGS_PATH env var

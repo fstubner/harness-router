@@ -1,26 +1,20 @@
 #!/usr/bin/env node
 // End-to-end MCP smoke test.
 //
-// Spawns the published binary (`node dist/bin.js mcp`), exchanges JSON-RPC
-// frames over stdio, and confirms the server advertises the expected name,
-// version (loaded from package.json at runtime), tool set, and prompt set.
-//
-// The vitest suite covers the same logic via the SDK's in-memory transport;
-// this script is the one that exercises the actual spawned binary, so it
-// doubles as a release-readiness check.
+// Fast mode spawns the built binary as hosts do (`node dist/bin.js`) with a
+// temporary v0.3 config, then verifies initialize, tools/list, resources/list,
+// and resources/read over stdio.
 //
 // Usage:
-//   npm run build && npm run smoke           — fast checks only
-//   npm run build && npm run smoke -- --live — also dispatch through every
-//                                              real CLI, costing ~60 tokens
+//   npm run build && npm run smoke
+//   HARNESS_ROUTER_CONFIG=/path/to/real/config.yaml npm run smoke -- --live
 //
-// `--live` (or the legacy HARNESS_ROUTER_LIVE_DISPATCH=1 env var) opts into
-// real dispatches against every configured service. Skipped by default
-// because each invocation costs real subscription quota and takes a few
-// seconds, and CI doesn't have CLI auth set up anyway.
+// `--live` dispatches one tiny prompt through the real configured router. It
+// consumes real quota and therefore never runs by default.
 
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -30,11 +24,28 @@ const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf-8"));
 const expectedName = pkg.name;
 const expectedVersion = pkg.version;
 
-// Live mode: --live flag OR legacy env var. Either is fine; the flag is
-// preferred for new runs.
 const LIVE = process.argv.includes("--live") || process.env.HARNESS_ROUTER_LIVE_DISPATCH === "1";
 
-const child = spawn(process.execPath, [join(repoRoot, "dist", "bin.js"), "mcp"], {
+const tempDir = mkdtempSync(join(tmpdir(), "harness-router-smoke-"));
+const smokeConfig = join(tempDir, "config.yaml");
+writeFileSync(
+  smokeConfig,
+  [
+    "priority: [smoke-model]",
+    "models:",
+    "  smoke-model:",
+    "    metered:",
+    "      base_url: http://127.0.0.1:9/v1",
+    "      api_key: smoke-test",
+    "",
+  ].join("\n"),
+);
+
+const configPath = LIVE ? process.env.HARNESS_ROUTER_CONFIG : smokeConfig;
+const childArgs = [join(repoRoot, "dist", "bin.js")];
+if (configPath) childArgs.push("--config", configPath);
+
+const child = spawn(process.execPath, childArgs, {
   stdio: ["pipe", "pipe", "pipe"],
   cwd: repoRoot,
   env: { ...process.env, OTEL_SDK_DISABLED: "true" },
@@ -91,14 +102,13 @@ function notify(method, params) {
 const results = [];
 function check(label, ok, detail) {
   results.push({ label, ok, detail });
-  const tick = ok ? "✔" : "✖";
-  console.log(`  ${tick} ${label}${detail ? `  — ${detail}` : ""}`);
+  const tick = ok ? "OK" : "FAIL";
+  console.log(`  ${tick} ${label}${detail ? ` - ${detail}` : ""}`);
 }
 
 try {
-  console.log(`Spawned: node dist/bin.js mcp  (pid=${child.pid})\n`);
+  console.log(`Spawned: node ${childArgs.join(" ")}  (pid=${child.pid})\n`);
 
-  // --- initialize ---------------------------------------------------------
   const init = await rpc("initialize", {
     protocolVersion: "2024-11-05",
     capabilities: {},
@@ -111,7 +121,7 @@ try {
   console.log(`  serverInfo.version = ${info.version}`);
   console.log(`  protocolVersion    = ${init.result?.protocolVersion}`);
   console.log(`  capabilities       = ${Object.keys(init.result?.capabilities ?? {}).join(", ")}`);
-  console.log(`  instructions[0..80]= ${(init.result?.instructions ?? "").slice(0, 80)}…\n`);
+  console.log(`  instructions[0..80]= ${(init.result?.instructions ?? "").slice(0, 80)}...\n`);
 
   check("serverInfo.name matches package.json", info.name === expectedName, `got "${info.name}"`);
   check(
@@ -121,160 +131,71 @@ try {
   );
   const caps = init.result?.capabilities ?? {};
   check("server advertises tools capability", "tools" in caps);
-  check("server advertises prompts capability", "prompts" in caps);
+  check("server advertises resources capability", "resources" in caps);
 
   notify("notifications/initialized", {});
 
-  // --- tools/list ---------------------------------------------------------
   const toolsR = await rpc("tools/list", {});
   const toolNames = (toolsR.result?.tools ?? []).map((t) => t.name).sort();
-  console.log(`\n[tools/list — ${toolNames.length}] ${toolNames.join(", ")}`);
-  const expectedTools = ["code", "code_mixture", "dashboard", "get_quota_status"].sort();
-  check("all 4 tools advertised", JSON.stringify(toolNames) === JSON.stringify(expectedTools));
+  console.log(`\n[tools/list - ${toolNames.length}] ${toolNames.join(", ")}`);
+  check("single v0.3 tool advertised", JSON.stringify(toolNames) === JSON.stringify(["code"]));
 
-  // --- prompts/list -------------------------------------------------------
-  const promptsR = await rpc("prompts/list", {});
-  const promptNames = (promptsR.result?.prompts ?? []).map((p) => p.name).sort();
-  console.log(`\n[prompts/list — ${promptNames.length}] ${promptNames.join(", ")}`);
-  const expectedPrompts = ["compare-models", "health-check", "route-task"];
+  const resourcesR = await rpc("resources/list", {});
+  const resourceUris = (resourcesR.result?.resources ?? []).map((r) => r.uri).sort();
+  console.log(`\n[resources/list - ${resourceUris.length}] ${resourceUris.join(", ")}`);
+  const expectedResources = ["harness-router://status", "harness-router://status.json"].sort();
   check(
-    "all 3 prompts advertised",
-    JSON.stringify(promptNames) === JSON.stringify(expectedPrompts),
+    "status resources advertised",
+    JSON.stringify(resourceUris) === JSON.stringify(expectedResources),
   );
 
-  // --- prompts/get --------------------------------------------------------
-  const got = await rpc("prompts/get", {
-    name: "route-task",
-    arguments: { task: "fix the auth bug on /login", model: "claude-opus-4-7" },
-  });
-  const text = got.result?.messages?.[0]?.content?.text ?? "";
-  console.log(`\n[prompts/get route-task] rendered ${text.length} chars`);
-  console.log(`  preview: ${text.split("\n").slice(0, 3).join(" / ")}`);
-  check("prompt rendered the task", text.includes("fix the auth bug on /login"));
-  check("prompt rendered the model override", text.includes('hints.model: "claude-opus-4-7"'));
-  check("prompt names the code tool", text.includes("`code`"));
+  const statusR = await rpc("resources/read", { uri: "harness-router://status" });
+  const statusText = statusR.result?.contents?.[0]?.text ?? "";
+  console.log(`\n[resources/read status] ${statusText.split("\n").length} lines`);
+  check("text status renders dashboard", statusText.includes("harness-router"));
 
-  // --- get_quota_status ---------------------------------------------------
-  const quota = await rpc("tools/call", {
-    name: "get_quota_status",
-    arguments: {},
-  });
-  const quotaText = quota.result?.content?.[0]?.text ?? "";
-  let parsedQuota = null;
+  const statusJsonR = await rpc("resources/read", { uri: "harness-router://status.json" });
+  const jsonText = statusJsonR.result?.contents?.[0]?.text ?? "";
+  let parsedStatus = null;
   try {
-    parsedQuota = JSON.parse(quotaText);
+    parsedStatus = JSON.parse(jsonText);
   } catch {
-    /* nope */
+    /* no */
   }
-  const quotaCount = parsedQuota ? Object.keys(parsedQuota).length : 0;
-  console.log(`\n[tools/call get_quota_status] services=${quotaCount}`);
-  check("get_quota_status returns per-service quota objects", quotaCount > 0);
-
-  // --- dashboard ----------------------------------------------------------
-  const dash = await rpc("tools/call", {
-    name: "dashboard",
-    arguments: {},
-  });
-  const dashText = dash.result?.content?.[0]?.text ?? "";
-  console.log(
-    `\n[tools/call dashboard] ${dashText.split("\n").length} lines, ${dashText.length} chars`,
-  );
-  // v0.2.0 dashboard groups by cost tier (subscription / metered) instead of
-  // numeric tiers. Look for the new section headers + a routing-pick line.
+  check("JSON status parses", parsedStatus !== null);
   check(
-    "dashboard renders a multi-line text block",
-    (dashText.includes("Subscription") || dashText.includes("Metered")) && dashText.length > 200,
+    "JSON status includes smoke route in fast mode",
+    LIVE || Object.keys(parsedStatus ?? {}).some((k) => k.includes("smoke-model")),
   );
 
-  // --- LIVE DISPATCH (opt-in via --live or HARNESS_ROUTER_LIVE_DISPATCH=1) --
-  // Real `code` call: ~5 in / ~5 out tokens against whichever route the
-  // priority walk picks (highest-priority subscription service with quota).
   if (LIVE) {
-    console.log("\n[live] dispatching code with a 5-token prompt …");
+    console.log("\n[live] dispatching code with a tiny prompt...");
     const live = await rpc(
       "tools/call",
       {
         name: "code",
         arguments: { prompt: "Reply with only the single word: ok" },
       },
-      60_000,
+      120_000,
     );
     const liveText = live.result?.content?.[0]?.text ?? "";
     let parsedLive = null;
     try {
       parsedLive = JSON.parse(liveText);
     } catch {
-      /* nope */
+      /* no */
     }
-    console.log(`  service: ${parsedLive?.service}`);
-    console.log(`  success: ${parsedLive?.success}`);
-    console.log(`  output:  ${(parsedLive?.output ?? "").slice(0, 60).replace(/\n/g, " ")}`);
-    if (parsedLive?.routing) {
-      console.log(
-        `  routing: model=${parsedLive.routing.model} tier=${parsedLive.routing.tier} quota=${parsedLive.routing.quotaScore?.toFixed?.(2)}`,
-      );
-    }
-    check("live code returned success=true", parsedLive?.success === true, parsedLive?.error ?? "");
-    check("live code returned non-empty output", (parsedLive?.output ?? "").length > 0);
-    check("live code recorded a routing decision", !!parsedLive?.routing);
-
-    // --- per-service verification --------------------------------------
-    // Force-dispatch through each enabled service via hints.service. Proves
-    // each dispatcher's subprocess args + JSON-output parsing actually work
-    // with the new model-first routing decision shape.
-    const listSvc = await rpc("tools/call", {
-      name: "get_quota_status",
-      arguments: {},
-    });
-    const svcNames = Object.keys(JSON.parse(listSvc.result?.content?.[0]?.text ?? "{}"));
-    console.log(
-      `\n[per-service] dispatching one prompt through each of ${svcNames.length} services…`,
-    );
-    for (const svcName of svcNames) {
-      const t0 = Date.now();
-      let resp;
-      try {
-        resp = await rpc(
-          "tools/call",
-          {
-            name: "code",
-            arguments: {
-              prompt: "Reply with only the single word: ok",
-              hints: { service: svcName },
-            },
-          },
-          120_000,
-        );
-      } catch (err) {
-        console.log(`  ✖ code (service=${svcName}) → ${err.message}`);
-        check(`code via ${svcName} succeeded`, false, err.message);
-        continue;
-      }
-      const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-      const text = resp.result?.content?.[0]?.text ?? "";
-      let parsed = null;
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        /* no */
-      }
-      const out = (parsed?.output ?? "").trim().slice(0, 40).replace(/\n/g, " ");
-      const svc = parsed?.service ?? "?";
-      const ok = parsed?.success === true && (parsed?.output ?? "").length > 0;
-      const tick = ok ? "✔" : "✖";
-      const err = parsed?.error ?? "";
-      console.log(
-        `  ${tick} code service=${svcName}  →  ${svc} (${elapsed}s)  output: "${out}"${err ? `  err: ${err}` : ""}`,
-      );
-      check(`code via ${svcName} succeeded`, ok, err);
-      if (ok) {
-        check(`code via ${svcName} routed to that service`, svc === svcName, `service=${svc}`);
-      }
-    }
+    const route = parsedLive?.route;
+    console.log(`  mode:    ${parsedLive?.mode}`);
+    console.log(`  service: ${route?.service}`);
+    console.log(`  success: ${route?.success}`);
+    console.log(`  output:  ${(route?.output ?? "").slice(0, 60).replace(/\n/g, " ")}`);
+    check("live code returned mode=single", parsedLive?.mode === "single");
+    check("live code returned success=true", route?.success === true, route?.error ?? "");
+    check("live code returned non-empty output", (route?.output ?? "").length > 0);
+    check("live code recorded a routing decision", !!route?.routing);
   } else {
-    console.log(
-      "\n[live] skipped — pass `--live` (or set HARNESS_ROUTER_LIVE_DISPATCH=1) to run real dispatches.",
-    );
+    console.log("\n[live] skipped - pass --live to run a real dispatch.");
   }
 
   console.log("\n--- summary ---");
@@ -291,4 +212,5 @@ try {
 } finally {
   child.kill("SIGTERM");
   await new Promise((r) => child.on("exit", r));
+  rmSync(tempDir, { recursive: true, force: true });
 }

@@ -32,23 +32,23 @@ const SERVER_NAME = "harness-router";
 const SERVER_VERSION = VERSION;
 
 const SERVER_INSTRUCTIONS =
-  "Model-first router: walks the user's `model_priority` list, preferring " +
-  "subscription-backed services over metered API. Use the `code` tool for " +
-  "most coding tasks — pass `hints.model` to bump a specific model to the " +
-  "front of the priority list, or `hints.service` to force a specific " +
-  "dispatcher. Use `code_mixture` to fan a prompt out to every available " +
-  "service in parallel for synthesis. Use `dashboard` (text) or " +
-  "`get_quota_status` (JSON) to inspect routing state. Pre-built prompts " +
-  "(route-task, compare-models, health-check) are available via the host's " +
-  "prompt picker. If no services are configured or reachable, run " +
-  "`harness-router doctor` from the terminal to see what's missing.";
+  "Model-first router: walks the user's `priority` model list, preferring " +
+  "subscription-backed routes over metered API. Use the `code` tool for " +
+  'coding tasks. In default `mode: "single"`, pass `hints.model` to bump ' +
+  "a model to the front of the priority list or `hints.service` to force an " +
+  'internal route id. Use `mode: "fanout"` with `models` to run the same ' +
+  "prompt across multiple configured model routes for synthesis. Inspect " +
+  "routing state via MCP resources: `harness-router://status` for text and " +
+  "`harness-router://status.json` for JSON. If no routes are configured or " +
+  "reachable, run `harness-router onboard` or `harness-router doctor` from " +
+  "the terminal.";
 
 // ---------------------------------------------------------------------------
 // Builder — shared between stdio and HTTP entry points
 // ---------------------------------------------------------------------------
 
 export interface BuildMcpOptions {
-  /** Path to config.yaml. Omit to auto-detect installed CLIs. */
+  /** Path to config.yaml. Omit to use ~/.harness-router/config.yaml. */
   configPath?: string;
 }
 

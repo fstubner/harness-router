@@ -367,7 +367,7 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
       return;
     }
 
-    const reader = res.body.getReader();
+    const reader: ReadableStreamDefaultReader<Uint8Array> = res.body.getReader();
     const decoder = new TextDecoder();
 
     // Track whether we drained the stream cleanly. If a consumer abandons
@@ -380,9 +380,12 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
     try {
       try {
         while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
+          const read: unknown = await reader.read();
+          if (!isStreamRead(read)) {
+            throw new Error("Invalid response stream chunk");
+          }
+          if (read.done) break;
+          buffer += decoder.decode(read.value, { stream: true });
 
           let boundary = buffer.indexOf("\n\n");
           while (boundary >= 0) {
@@ -524,6 +527,15 @@ function extractErrorMessage(body: ChatCompletionResponse | null, rawBody: strin
     if (typeof body.error.message === "string") return body.error.message;
   }
   return rawBody.slice(0, 200) || "(empty body)";
+}
+
+function isStreamRead(
+  value: unknown,
+): value is { done: true; value?: undefined } | { done: false; value: Uint8Array } {
+  if (!value || typeof value !== "object") return false;
+  const maybe = value as { done?: unknown; value?: unknown };
+  if (maybe.done === true) return true;
+  return maybe.done === false && maybe.value instanceof Uint8Array;
 }
 
 async function buildPromptWithFiles(prompt: string, files: string[]): Promise<string> {

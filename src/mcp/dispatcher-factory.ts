@@ -50,6 +50,16 @@ const HARNESS_TABLE: Record<string, DispatcherCtor> = {
   opencode: OpenCodeDispatcher,
 };
 
+const DEFAULT_COMMANDS = new Map<string, string>([
+  ["claude_code", "claude"],
+  ["codex", "codex"],
+  ["copilot", "copilot"],
+  ["cursor", "agent"],
+  ["gemini_cli", "gemini"],
+  ["gemini", "gemini"],
+  ["opencode", "opencode"],
+]);
+
 /** Resolve a CLI binary on PATH. Returns null when not found. */
 async function resolveCliPath(command: string | undefined): Promise<string | null> {
   if (!command) return null;
@@ -101,7 +111,7 @@ export async function makeDispatcher(
     //
     // Without this fallback, the unknown-harness path returned `undefined`
     // and the service vanished from routing — confusing UX. With it, the
-    // service is reachable via `code_auto({hints:{harness:"<id>"}})`.
+    // service is reachable via `code({ hints: { service: "<id>" } })`.
     if (svc.command) {
       const cliPath = await resolveCliPath(svc.command);
       return new GenericCliDispatcher(svc, { cliPath });
@@ -110,11 +120,10 @@ export async function makeDispatcher(
   }
 
   // Resolve the CLI once at construction so `isAvailable()` reflects reality
-  // — the router skips services whose CLI isn't on PATH. Crucial for legacy
-  // YAML configs that explicitly list services for CLIs the user doesn't
-  // have installed; auto-detect mode already filters those out in loadConfig
-  // but legacy mode does not.
-  const cliPath = await resolveCliPath(svc.command);
+  // — the router skips services whose CLI isn't on PATH. If the config omits
+  // `command`, use the built-in default for that harness.
+  const command = svc.command ?? DEFAULT_COMMANDS.get(harness);
+  const cliPath = await resolveCliPath(command);
   return new Ctor(svc, { cliPath });
 }
 

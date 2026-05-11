@@ -54,11 +54,15 @@ describe("makeDispatcher — built-in harnesses", () => {
   it("constructs a ClaudeCodeDispatcher for harness=claude_code", async () => {
     const d = await makeDispatcher("my_claude", svc({ name: "my_claude", harness: "claude_code" }));
     expect(d).toBeInstanceOf(ClaudeCodeDispatcher);
+    expect(whichMock).toHaveBeenCalledWith("claude", { nothrow: true });
+    expect(d?.isAvailable()).toBe(true);
   });
 
   it("constructs a CopilotDispatcher for harness=copilot (added in 0.1.0)", async () => {
     const d = await makeDispatcher("my_copilot", svc({ name: "my_copilot", harness: "copilot" }));
     expect(d).toBeInstanceOf(CopilotDispatcher);
+    expect(whichMock).toHaveBeenCalledWith("copilot", { nothrow: true });
+    expect(d?.isAvailable()).toBe(true);
   });
 });
 

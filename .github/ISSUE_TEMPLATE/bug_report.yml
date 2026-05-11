@@ -7,15 +7,15 @@ body:
     attributes:
       value: |
         Thanks for taking the time. Before filing, please:
-        - Run `harness-router-mcp init` and paste the output below — it tells us a lot at a glance.
-        - Confirm you're on the latest version (`harness-router-mcp --version`, then `npm view harness-router-mcp version` to compare).
+        - Run `harness-router doctor` and paste the output below — it tells us a lot at a glance.
+        - Confirm you're on the latest version (`harness-router --version`, then `npm view harness-router version` to compare).
 
   - type: input
     id: version
     attributes:
-      label: harness-router-mcp version
-      description: Output of `harness-router-mcp --version`
-      placeholder: "0.1.0"
+      label: harness-router version
+      description: Output of `harness-router --version`
+      placeholder: "0.3.0"
     validations:
       required: true
 
@@ -43,7 +43,7 @@ body:
   - type: textarea
     id: init-output
     attributes:
-      label: "`harness-router-mcp init` output"
+      label: "`harness-router doctor` output"
       description: Paste the full output (redact API keys / tokens).
       render: text
     validations:
@@ -64,7 +64,7 @@ body:
       description: The smaller the reproducer, the faster the fix.
       placeholder: |
         1. Configure `config.yaml` with…
-        2. Run `harness-router-mcp …`
+        2. Run `harness-router …`
         3. Observe …
     validations:
       required: true

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (empty — track changes for the next release here)
 
-## [0.3.0] — 2026-05-12
+## [0.3.0] — 2026-05-11
 
 Major redesign. Breaking changes throughout. The npm package renames from
 `harness-router-mcp` to `harness-router`. v0.2 configs are not migrated;
@@ -338,8 +338,8 @@ Initial public release.
 
 ### Notes
 
-- **Quota state file**: `~/.harness-router/quota_state.json` (override with `QuotaCacheOptions.stateFile`). **Single-process** by design — the read-modify-write race between two MCP processes sharing one state file is documented as a known limit; mitigation is per-process `state_file` paths in YAML.
-- **Config path**: `--config <path>` flag, `$HARNESS_ROUTER_CONFIG` env var, then auto-detect — first match wins.
+- **Quota state store**: `~/.harness-router/state.db`, SQLite WAL mode, shared safely by concurrent stdio server processes.
+- **Config path**: `--config <path>` flag, `$HARNESS_ROUTER_CONFIG` env var, then `~/.harness-router/config.yaml` — first match wins. No implicit auto-detect config path remains.
 - **Requires Node ≥ 20.**
 - **At least one** of `claude`, `codex`, `gemini`, Cursor's `agent`, `opencode`, or `copilot` on PATH (or any third-party `command:` you register via YAML).
 
@@ -349,6 +349,7 @@ Initial public release.
 - Security disclosures: [SECURITY.md](SECURITY.md).
 - Issues: [GitHub issue tracker](https://github.com/fstubner/harness-router-mcp/issues).
 
-[Unreleased]: https://github.com/fstubner/harness-router-mcp/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/fstubner/harness-router-mcp/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/fstubner/harness-router-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/fstubner/harness-router-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/fstubner/harness-router-mcp/releases/tag/v0.1.0

@@ -34,7 +34,7 @@ function tmpEnv(platform: NodeJS.Platform = "linux") {
 const ENTRY: McpServerEntry = {
   name: "harness-router",
   command: "npx",
-  args: ["-y", "harness-router", "mcp"],
+  args: ["-y", "harness-router"],
 };
 
 // ---------------------------------------------------------------------------
@@ -56,7 +56,7 @@ describe("install — JSON hosts (Claude Desktop, Cursor)", () => {
         };
         expect(written.mcpServers["harness-router"]).toEqual({
           command: "npx",
-          args: ["-y", "harness-router", "mcp"],
+          args: ["-y", "harness-router"],
         });
       });
 
