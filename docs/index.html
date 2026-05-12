@@ -8,13 +8,13 @@
 <meta name="description" content="Harness Router is an open-source local MCP server that routes coding tasks across Claude Code, Codex, Cursor, Gemini CLI, opencode, Copilot CLI, generic CLIs, and API fallbacks." />
 <meta name="author" content="Felix Stubner" />
 <meta name="keywords" content="MCP router, Model Context Protocol router, AI coding agent router, Claude Code MCP, Codex MCP, Cursor agent, opencode, Gemini CLI, GitHub Copilot CLI, coding agent fallback, subscription quota, metered API fallback, local MCP server" />
-<link rel="canonical" href="https://fstubner.github.io/harness-router-mcp/" />
+<link rel="canonical" href="https://fstubner.github.io/harness-router/" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23111111'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%23d4926b'/%3E%3C/svg%3E" />
 
 <meta property="og:type" content="website" />
 <meta property="og:title" content="Harness Router - MCP router for coding agents" />
 <meta property="og:description" content="Route coding tasks across Claude Code, Codex, Cursor, opencode, Gemini CLI, Copilot CLI, and API fallbacks with one local MCP server." />
-<meta property="og:url" content="https://fstubner.github.io/harness-router-mcp/" />
+<meta property="og:url" content="https://fstubner.github.io/harness-router/" />
 <meta property="og:site_name" content="Harness Router" />
 <meta name="twitter:card" content="summary" />
 <meta name="twitter:title" content="Harness Router - MCP router for coding agents" />
@@ -29,13 +29,13 @@
       "name": "Harness Router",
       "applicationCategory": "DeveloperApplication",
       "operatingSystem": "Windows, macOS, Linux",
-      "softwareVersion": "0.3.1",
+      "softwareVersion": "0.3.2",
       "programmingLanguage": "TypeScript",
       "runtimePlatform": "Node.js 22 or newer",
       "softwareRequirements": "Node.js 22 or newer and at least one configured coding CLI or API route",
       "license": "https://opensource.org/licenses/MIT",
-      "url": "https://fstubner.github.io/harness-router-mcp/",
-      "codeRepository": "https://github.com/fstubner/harness-router-mcp",
+      "url": "https://fstubner.github.io/harness-router/",
+      "codeRepository": "https://github.com/fstubner/harness-router",
       "downloadUrl": "https://www.npmjs.com/package/harness-router",
       "description": "Harness Router is an open-source local MCP server that routes coding tasks across coding agents, subscription-backed CLIs, and metered API fallbacks.",
       "author": {
@@ -584,7 +584,7 @@ footer a:hover{color:#ccc}
     <a href="#surfaces">Features</a>
     <a href="#install">Install</a>
     <a href="#faq">FAQ</a>
-    <a href="https://github.com/fstubner/harness-router-mcp">GitHub</a>
+    <a href="https://github.com/fstubner/harness-router">GitHub</a>
   </div>
 </nav>
 
@@ -599,11 +599,11 @@ footer a:hover{color:#ccc}
     </p>
 
     <div class="social-proof" id="social-proof" aria-live="polite">
-      <a href="https://github.com/fstubner/harness-router-mcp">GitHub repository</a>
+      <a href="https://github.com/fstubner/harness-router">GitHub repository</a>
       <span class="sep">/</span>
       <a href="https://www.npmjs.com/package/harness-router">npm package</a>
       <span class="sep">/</span>
-      <span>v0.3.1</span>
+      <span>v0.3.2</span>
     </div>
 
     <div class="quick-install has-copy always-show">
@@ -612,8 +612,8 @@ footer a:hover{color:#ccc}
 
     <div class="links">
       <a href="#install">Install options</a>
-      <a href="https://github.com/fstubner/harness-router-mcp#readme">Read the docs</a>
-      <a class="plain" href="https://github.com/fstubner/harness-router-mcp">View source</a>
+      <a href="https://github.com/fstubner/harness-router#readme">Read the docs</a>
+      <a class="plain" href="https://github.com/fstubner/harness-router">View source</a>
     </div>
   </div>
 
@@ -653,7 +653,7 @@ footer a:hover{color:#ccc}
       <h2>Three surfaces, one routing policy</h2>
       <p class="lead">
         Every surface reads the same model-first config and shared SQLite state.
-        <a href="https://github.com/fstubner/harness-router-mcp#readme">Full README</a>
+        <a href="https://github.com/fstubner/harness-router#readme">Full README</a>
       </p>
 
       <div class="surfaces">
@@ -831,7 +831,7 @@ API fallback          key set    reachable</div>
 
           <p class="footer-note">
             Source, issue tracker, and release history are on
-            <a href="https://github.com/fstubner/harness-router-mcp">GitHub</a>.
+            <a href="https://github.com/fstubner/harness-router">GitHub</a>.
             The npm package is <a href="https://www.npmjs.com/package/harness-router">harness-router</a>.
           </p>
         </div>
@@ -918,10 +918,9 @@ API fallback          key set    reachable</div>
         <details>
           <summary>Why does Harness Router require Node.js 22 or newer?</summary>
           <div class="answer">
-            Node.js 20 is past end of life, so Harness Router now targets
-            Node.js 22 or newer for supported installs, CI, and publish jobs.
-            That is separate from coding-agent CLIs, which may have their own
-            runtime requirements.
+            Harness Router targets Node.js 22 or newer for supported installs,
+            CI, and publish jobs. That is separate from coding-agent CLIs,
+            which may have their own runtime requirements.
           </div>
         </details>
       </div>
@@ -932,7 +931,7 @@ API fallback          key set    reachable</div>
 <footer>
   <div>Built by <a href="https://github.com/fstubner">Felix Stubner</a>. MIT licensed.</div>
   <div class="flinks">
-    <a href="https://github.com/fstubner/harness-router-mcp">GitHub</a>
+    <a href="https://github.com/fstubner/harness-router">GitHub</a>
     <a href="https://www.npmjs.com/package/harness-router">npm</a>
     <a href="https://modelcontextprotocol.io">MCP</a>
   </div>

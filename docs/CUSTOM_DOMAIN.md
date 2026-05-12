@@ -2,7 +2,7 @@
 
 This repo's GitHub Pages workflow (`.github/workflows/pages.yml`) deploys
 `docs/` whenever `main` advances. To switch the landing page from the
-default `fstubner.github.io/harness-router-mcp` to a custom domain, do
+default `fstubner.github.io/harness-router` to a custom domain, do
 ALL of the following — one before, one after, in this order:
 
 ## 1. Register + DNS (do this BEFORE renaming the placeholder)
@@ -54,9 +54,9 @@ Three places need the domain string updated in tandem:
 
 - `package.json` → `homepage`
 - `README.md` → "Landing page" link near the top
-- `docs/index.html` → `<meta property="og:url">` and `<meta name="twitter:url">`
+- `docs/index.html` → canonical URL, `og:url`, and JSON-LD `url`
 
-Search-and-replace `fstubner.github.io/harness-router-mcp` → `your-domain.dev`.
+Search-and-replace `fstubner.github.io/harness-router` → `your-domain.dev`.
 
 ## 4. Enable HTTPS
 

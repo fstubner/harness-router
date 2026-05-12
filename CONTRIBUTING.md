@@ -1,22 +1,22 @@
-# Contributing to harness-router-mcp
+# Contributing to harness-router
 
 Thanks for considering a contribution. This project is in `0.x` and the surface area is still moving — small, focused PRs land fastest.
 
 ## Development setup
 
 ```bash
-git clone https://github.com/fstubner/harness-router-mcp.git
-cd harness-router-mcp
+git clone https://github.com/fstubner/harness-router.git
+cd harness-router
 npm ci
 ```
 
-You'll need **Node ≥ 20** and at least one of the supported CLIs on PATH (`claude`, `codex`, `gemini`, or Cursor's `agent`) if you want the live verification step in `init` and `smoke` to work. CI runs the unit tests without any of them.
+You'll need **Node ≥ 22** and at least one of the supported CLIs on PATH (`claude`, `codex`, `gemini`, Cursor's `agent`, `opencode`, or `copilot`) if you want live route probing to work. CI runs the unit tests without any of them.
 
 ## Useful scripts
 
 | Command                | What it does                                                                      |
 | ---------------------- | --------------------------------------------------------------------------------- |
-| `npm run check`        | Typecheck (src + tests) and run all 243 vitest cases. Run this before pushing.    |
+| `npm run check`        | Typecheck (src + tests) and run all 456 vitest cases. Run this before pushing.    |
 | `npm run typecheck`    | Typecheck only — fast feedback on type errors in both `src/` and `tests/`.        |
 | `npm test`             | Vitest, run mode.                                                                 |
 | `npm run test:watch`   | Vitest, watch mode.                                                               |

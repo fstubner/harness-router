@@ -2,7 +2,7 @@
   "mcpServers": {
     "harness-router": {
       "command": "npx",
-      "args": ["-y", "harness-router-mcp", "mcp"],
+      "args": ["-y", "harness-router"],
       "env": {
         "HARNESS_ROUTER_CONFIG": "/path/to/your/config.yaml",
         "GEMINI_API_KEY": "your-gemini-api-key-here"

@@ -1,6 +1,6 @@
 {
   "name": "harness-router",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "MCP server that routes coding tasks model-first across your AI subscriptions and APIs. Use Claude Pro, ChatGPT Plus, Cursor, Copilot CLI, opencode, etc. before falling back to metered API.",
   "keywords": [
     "mcp",
@@ -20,7 +20,7 @@
   ],
   "license": "MIT",
   "author": "Felix Stubner",
-  "homepage": "https://fstubner.github.io/harness-router-mcp/",
+  "homepage": "https://fstubner.github.io/harness-router/",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -96,9 +96,9 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/fstubner/harness-router-mcp.git"
+    "url": "git+https://github.com/fstubner/harness-router.git"
   },
   "bugs": {
-    "url": "https://github.com/fstubner/harness-router-mcp/issues"
+    "url": "https://github.com/fstubner/harness-router/issues"
   }
 }

@@ -1,9 +1,7 @@
-# v0.3.0 release checklist
+# Release checklist
 
 Use this checklist for the `harness-router` npm package release from the
-existing `fstubner/harness-router-mcp` repository. If the GitHub repository is
-renamed later, update `package.json`, README, CHANGELOG links, and Pages URLs
-in the same change.
+`fstubner/harness-router` repository.
 
 ## Local pre-flight
 
@@ -15,12 +13,12 @@ in the same change.
 - [ ] `npm run smoke`
 - [ ] `npm audit --omit=dev`
 - [ ] `npm pack --dry-run`
-- [ ] Verify `package.json` and `package-lock.json` both say
-      `harness-router@0.3.0`.
+- [ ] Verify `package.json` and `package-lock.json` both contain the intended
+      `harness-router@<version>` release.
 - [ ] Verify `config.example.yaml` parses:
       `harness-router list-services --config config.example.yaml`.
-- [ ] Verify npm name availability before first publish:
-      `npm view harness-router version` should return 404 until published.
+- [ ] For first publishes only, verify npm name availability:
+      `npm view harness-router version` should return 404 before publication.
 
 ## Optional live validation
 
@@ -30,8 +28,8 @@ These checks consume real quota and require local CLI/API auth.
 - [ ] `harness-router doctor`
 - [ ] `harness-router doctor --probe-routes`
 - [ ] Fresh temp install from tarball:
-      `npm pack && npm install -g ./harness-router-0.3.0.tgz`
-- [ ] `npx harness-router --version` prints `harness-router 0.3.0`.
+      `npm pack && npm install -g ./harness-router-<version>.tgz`
+- [ ] `npx harness-router --version` prints the intended version.
 - [ ] Add/remove one MCP host with `harness-router install --print`,
       then inspect the generated snippet before writing host configs.
 
@@ -55,8 +53,8 @@ npm run smoke
 npm audit --omit=dev
 npm pack --dry-run
 
-git tag -a v0.3.0 -m "v0.3.0"
-git push harness v0.3.0
+git tag -a v<version> -m "v<version>"
+git push harness v<version>
 gh run watch
 ```
 

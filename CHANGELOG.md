@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (empty — track changes for the next release here)
 
+## [0.3.2] — 2026-05-12
+
+### Changed
+
+- Renamed the GitHub repository from `fstubner/harness-router-mcp` to
+  `fstubner/harness-router` so it matches the npm package name.
+- Updated package metadata, landing page canonical URLs, security links,
+  contributor setup, and release notes to point at the renamed repository.
+- Removed client-side npm download stat fetching from the landing page because
+  new packages can return a 404 until npm download history exists.
+
+## [0.3.1] — 2026-05-11
+
+### Changed
+
+- Raised the supported runtime to Node.js 22 or newer across package metadata,
+  docs, CI, and publish workflows.
+- Reworked the landing page around a netscli-style SEO/GEO structure with a
+  centered hero, install block, feature surfaces, OS install tabs, and FAQ
+  schema.
+
 ## [0.3.0] — 2026-05-11
 
 Major redesign. Breaking changes throughout. The npm package renames from
@@ -333,23 +354,25 @@ Initial public release.
 - **ESLint** flat config with `typescript-eslint` recommended-type-checked plus rules tuned to this codebase: `no-floating-promises`, `no-misused-promises`, `consistent-type-imports`, `no-explicit-any`, `prefer-promise-reject-errors`, vitest-plugin assertion checks. Zero errors at baseline.
 - **JSDoc** on every public re-export from `src/index.ts`.
 - **Trust model** documented in README — generic_cli command resolution, HTTP-no-auth boundary, OS-level isolation guidance.
-- **CI matrix** — Node 20/22 × ubuntu/windows/macOS with format-check + lint + typecheck + test + build + tarball validation. Coverage runs on a single leg (Node 22 / ubuntu) and uploads `lcov.info` as an artifact.
+- **CI matrix** — Node 22/24 × ubuntu/windows/macOS with format-check + lint + typecheck + test + build + tarball validation. Coverage runs on a single leg (Node 22 / ubuntu) and uploads `lcov.info` as an artifact.
 - **npm publish** with `--provenance` + OIDC, tag-triggered (`v*`).
 
 ### Notes
 
 - **Quota state store**: `~/.harness-router/state.db`, SQLite WAL mode, shared safely by concurrent stdio server processes.
 - **Config path**: `--config <path>` flag, `$HARNESS_ROUTER_CONFIG` env var, then `~/.harness-router/config.yaml` — first match wins. No implicit auto-detect config path remains.
-- **Requires Node ≥ 20.**
+- **Requires Node ≥ 22.**
 - **At least one** of `claude`, `codex`, `gemini`, Cursor's `agent`, `opencode`, or `copilot` on PATH (or any third-party `command:` you register via YAML).
 
 ### Reporting
 
 - Code of Conduct: [Contributor Covenant 2.1](CODE_OF_CONDUCT.md), reports to **felix.stubner@gmail.com**.
 - Security disclosures: [SECURITY.md](SECURITY.md).
-- Issues: [GitHub issue tracker](https://github.com/fstubner/harness-router-mcp/issues).
+- Issues: [GitHub issue tracker](https://github.com/fstubner/harness-router/issues).
 
-[Unreleased]: https://github.com/fstubner/harness-router-mcp/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/fstubner/harness-router-mcp/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/fstubner/harness-router-mcp/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/fstubner/harness-router-mcp/releases/tag/v0.1.0
+[Unreleased]: https://github.com/fstubner/harness-router/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/fstubner/harness-router/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/fstubner/harness-router/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/fstubner/harness-router/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/fstubner/harness-router/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/fstubner/harness-router/releases/tag/v0.1.0
